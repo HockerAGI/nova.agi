@@ -1,22 +1,19 @@
-export type Intent =
-  | { action: "PING" }
-  | { action: "NODES_LIST" }
-  | { action: "AGIS_LIST" }
-  | { action: "SUPPLY_PRODUCTS_LIST" }
-  | { action: "SUPPLY_ORDERS_LIST" }
-  | { action: "DEPLOY_HOCKER_ONE" }
-  | { action: "COMMAND_SEND"; params: { node_id: string; command: string; payload?: Record<string, unknown>; project_id?: string } }
-  | { action: "UNKNOWN"; reason?: string };
+export type NovaAction =
+  | { type: "reply"; message: string }
+  | { type: "enqueue_command"; node_id: string; command: string; payload: any; needs_approval?: boolean; message?: string }
+  | { type: "redeploy_vercel"; message?: string }
+  | { type: "register_agis"; message?: string };
 
-export function ruleIntent(text: string): Intent {
-  const t = text.toLowerCase().trim();
+export function interpretRules(text: string): NovaAction {
+  const t = (text || "").toLowerCase();
 
-  if (t === "ping") return { action: "PING" };
-  if (t.includes("lista") && t.includes("nodos")) return { action: "NODES_LIST" };
-  if (t.includes("lista") && (t.includes("agi") || t.includes("agis"))) return { action: "AGIS_LIST" };
-  if (t.includes("productos")) return { action: "SUPPLY_PRODUCTS_LIST" };
-  if (t.includes("ordenes") || t.includes("órdenes") || t.includes("orders")) return { action: "SUPPLY_ORDERS_LIST" };
-  if (t.includes("deploy") || t.includes("redeploy") || t.includes("vercel")) return { action: "DEPLOY_HOCKER_ONE" };
+  if (t.includes("redeploy") || t.includes("desplegar") || t.includes("deploy")) return { type: "redeploy_vercel" };
+  if (t.includes("registrar agis") || t.includes("seed agis")) return { type: "register_agis" };
 
-  return { action: "UNKNOWN" };
+  // comandos “humanos” (ejemplo)
+  if (t.startsWith("status")) {
+    return { type: "enqueue_command", node_id: "node-hocker-01", command: "status", payload: {}, needs_approval: false };
+  }
+
+  return { type: "reply", message: "Listo. Dime qué quieres que haga (ej: 'status', 'redeploy', 'registrar AGIs')." };
 }
