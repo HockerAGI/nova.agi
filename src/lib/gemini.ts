@@ -1,50 +1,55 @@
-type GeminiAction =
-  | { type: "enqueue"; command: "status" | "ping" | "read_dir" | "read_file_head"; payload?: any }
-  | { type: "vercel.redeploy" }
-  | { type: "unknown" };
+import { Intent } from "./intents";
 
-export type GeminiResult = {
+type GeminiResult = {
+  intent: Intent;
   reply: string;
-  action: GeminiAction;
 };
 
-const NOVA_SYSTEM = `Eres NOVA, orquestadora del ecosistema HOCKER.
-Reglas:
-- Responde SIEMPRE en JSON válido.
-- Nunca propongas ejecutar acciones fuera del allowlist.
-- Si la intención no es clara, action.type="unknown".
-`;
+function endpoint(model: string) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
 
-export async function interpretWithGemini(args: {
-  apiKey: string;
-  model: string;
+export async function interpretWithGemini(input: {
   text: string;
-}): Promise<GeminiResult | null> {
-  const { apiKey, model, text } = args;
-  if (!apiKey) return null;
+  project_id: string;
+  node_id: string;
+}): Promise<GeminiResult> {
+  const apiKey = process.env.GEMINI_API_KEY ?? "";
+  if (!apiKey) {
+    return {
+      intent: { action: "UNKNOWN", reason: "GEMINI_API_KEY missing" },
+      reply: "Falta GEMINI_API_KEY en el orchestrator."
+    };
+  }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const model = process.env.GEMINI_MODEL ?? "gemini-1.5-pro";
 
   const schema = {
-    type: "OBJECT",
+    type: "object",
     properties: {
-      reply: { type: "STRING" },
-      action: {
-        type: "OBJECT",
+      reply: { type: "string" },
+      intent: {
+        type: "object",
         properties: {
-          type: { type: "STRING" },
-          command: { type: "STRING" },
-          payload: { type: "OBJECT" }
+          action: { type: "string" },
+          params: { type: "object" }
         },
-        required: ["type"]
+        required: ["action"]
       }
     },
-    required: ["reply", "action"]
+    required: ["reply", "intent"]
   };
 
+  const system = [
+    "Eres NOVA (orchestrator).",
+    "Devuelve SIEMPRE JSON válido que cumpla el schema.",
+    "No inventes ids. Si falta un dato, pide el dato en 'reply' y usa intent UNKNOWN.",
+    "Acciones válidas: PING, NODES_LIST, AGIS_LIST, SUPPLY_PRODUCTS_LIST, SUPPLY_ORDERS_LIST, DEPLOY_HOCKER_ONE, COMMAND_SEND, UNKNOWN."
+  ].join("\n");
+
   const body = {
-    systemInstruction: { parts: [{ text: NOVA_SYSTEM }] },
-    contents: [{ role: "user", parts: [{ text }] }],
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: input.text }] }],
     generationConfig: {
       temperature: 0.2,
       responseMimeType: "application/json",
@@ -52,23 +57,38 @@ export async function interpretWithGemini(args: {
     }
   };
 
-  const r = await fetch(url, {
+  const r = await fetch(`${endpoint(model)}?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
 
-  if (!r.ok) return null;
+  const j = await r.json().catch(() => ({} as any));
+  if (!r.ok) {
+    return {
+      intent: { action: "UNKNOWN", reason: `Gemini error: ${j?.error?.message ?? r.status}` },
+      reply: "Gemini falló interpretando la intención. Reintenta."
+    };
+  }
 
-  const j = await r.json().catch(() => null);
-  const raw = j?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!raw || typeof raw !== "string") return null;
+  const text = j?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  if (!text) {
+    return {
+      intent: { action: "UNKNOWN", reason: "No text from Gemini" },
+      reply: "Gemini respondió vacío. Reintenta."
+    };
+  }
 
   try {
-    const out = JSON.parse(raw);
-    if (!out?.reply || !out?.action?.type) return null;
-    return out as GeminiResult;
+    const parsed = JSON.parse(text);
+    return {
+      intent: (parsed.intent ?? { action: "UNKNOWN" }) as Intent,
+      reply: String(parsed.reply ?? "")
+    };
   } catch {
-    return null;
+    return {
+      intent: { action: "UNKNOWN", reason: "Invalid JSON from Gemini" },
+      reply: "Gemini no devolvió JSON válido. Reintenta."
+    };
   }
 }
