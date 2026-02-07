@@ -2,13 +2,11 @@ FROM node:20-slim
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+RUN npm ci || npm i
 
-COPY tsconfig.json ./tsconfig.json
-COPY src ./src
-
-RUN npm install --include=dev && npm run build && npm prune --omit=dev
+COPY . .
+RUN npm run build
 
 ENV PORT=8080
 EXPOSE 8080
-CMD ["node", "dist/index.js"]
+CMD ["npm","start"]
