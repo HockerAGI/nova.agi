@@ -1,5 +1,5 @@
 {
-  "name": "nova-agi-orchestrator",
+  "name": "nova.agi",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -10,10 +10,10 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.0"
+    "@supabase/supabase-js": "^2.49.1"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
-    "typescript": "^5.6.3"
+    "typescript": "^5.7.3"
   }
 }
