@@ -1,11 +1,16 @@
-export function requireApiKey(req: Request) {
-  const expected = process.env.HOCKER_API_KEY;
-  const got = req.headers.get("x-hocker-key");
-  if (!expected) throw new Error("Missing HOCKER_API_KEY on nova.agi");
-  if (!got || got !== expected) {
-    const err = new Error("Unauthorized");
-    // @ts-ignore
-    err.status = 401;
-    throw err;
-  }
+import crypto from "node:crypto";
+import { stableStringify } from "./stable-json.js";
+
+export function signCommand(
+  secret: string,
+  payload: { id: string; node_id: string; command: string; payload: any }
+) {
+  const canonical = stableStringify({
+    id: payload.id,
+    node_id: payload.node_id,
+    command: payload.command,
+    payload: payload.payload ?? {}
+  });
+
+  return crypto.createHmac("sha256", secret).update(canonical).digest("base64");
 }
