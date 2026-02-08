@@ -1,19 +1,16 @@
-export type NovaAction =
-  | { type: "reply"; message: string }
-  | { type: "enqueue_command"; node_id: string; command: string; payload: any; needs_approval?: boolean; message?: string }
-  | { type: "redeploy_vercel"; message?: string }
-  | { type: "register_agis"; message?: string };
+import type { Intent } from "../types.js";
 
-export function interpretRules(text: string): NovaAction {
-  const t = (text || "").toLowerCase();
+export function detectIntent(msg: string): Intent {
+  const m = msg.toLowerCase();
 
-  if (t.includes("redeploy") || t.includes("desplegar") || t.includes("deploy")) return { type: "redeploy_vercel" };
-  if (t.includes("registrar agis") || t.includes("seed agis")) return { type: "register_agis" };
+  const codeHints = ["bug", "error", "ts", "typescript", "sql", "supabase", "docker", "cloud run", "rls", "api", "endpoint"];
+  if (codeHints.some((k) => m.includes(k))) return "code";
 
-  // comandos “humanos” (ejemplo)
-  if (t.startsWith("status")) {
-    return { type: "enqueue_command", node_id: "node-hocker-01", command: "status", payload: {}, needs_approval: false };
-  }
+  const researchHints = ["investiga", "research", "compara", "benchmark", "tendencia", "mercado", "competencia"];
+  if (researchHints.some((k) => m.includes(k))) return "research";
 
-  return { type: "reply", message: "Listo. Dime qué quieres que haga (ej: 'status', 'redeploy', 'registrar AGIs')." };
+  const opsHints = ["deploy", "infra", "server", "observabilidad", "logs", "seguridad", "audit", "backup"];
+  if (opsHints.some((k) => m.includes(k))) return "ops";
+
+  return "general";
 }
