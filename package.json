@@ -1,21 +1,17 @@
 {
-  "name": "nova.agi",
+  "name": "nova-agi-orchestrator",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node --env-file=.env.local --watch dist/index.js",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "seed:agis": "node dist/scripts/seedAgis.js"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
-    "dotenv": "^16.4.5"
-  },
-  "devDependencies": {
-    "@types/node": "^20.11.30",
-    "tsx": "^4.19.2",
-    "typescript": "^5.5.4"
+    "fastify": "^4.28.1",
+    "zod": "^3.24.1"
   }
 }
