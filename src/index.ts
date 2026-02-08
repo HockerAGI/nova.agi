@@ -1,56 +1,147 @@
-import http from "node:http";
-import { timingSafeEqual } from "./lib/security.js";
+import "dotenv/config";
+import http from "http";
+import { requireApiKey } from "./lib/security.js";
 import { decide } from "./lib/decide.js";
+import { logEvent } from "./lib/synapse.js";
+import { remember } from "./lib/memory.js";
 
-const PORT = Number(process.env.PORT ?? "8080");
-const KEY = process.env.NOVA_ORCHESTRATOR_KEY ?? "";
+const PORT = Number(process.env.PORT || 8080);
 
-function json(res: http.ServerResponse, status: number, data: any) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(data));
-}
-
-async function readBody(req: http.IncomingMessage) {
+async function readJson(req: http.IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(Buffer.from(c));
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const raw = Buffer.concat(chunks).toString("utf8");
-  try { return JSON.parse(raw || "{}"); } catch { return {}; }
+  return raw ? JSON.parse(raw) : {};
 }
 
-function requireKey(req: http.IncomingMessage) {
-  if (!KEY) return false;
-  const got = String(req.headers["x-hocker-key"] ?? "");
-  if (!got) return false;
-  return timingSafeEqual(got, KEY);
+function send(res: http.ServerResponse, status: number, body: any) {
+  const json = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "content-type,x-hocker-key"
+  });
+  res.end(json);
 }
 
-http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
-
-  if (req.method === "GET" && url.pathname === "/health") {
-    return json(res, 200, { ok: true, service: "nova.agi" });
+function handleCors(req: http.IncomingMessage, res: http.ServerResponse) {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "content-type,x-hocker-key",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
+    });
+    res.end();
+    return true;
   }
+  return false;
+}
 
-  if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
-  if (!requireKey(req)) return json(res, 401, { ok: false, error: "Bad key" });
+const server = http.createServer(async (req, res) => {
+  try {
+    if (handleCors(req, res)) return;
 
-  if (url.pathname === "/v1/chat") {
-    const body = await readBody(req);
-    const project_id = String(body.project_id ?? "global");
-    const thread_id = String(body.thread_id ?? "");
-    const user_id = String(body.user_id ?? "");
-    const node_id = String(body.node_id ?? "node-cloudrun-01");
-    const text = String(body.text ?? "");
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
-    if (!thread_id || !user_id || !text) {
-      return json(res, 400, { ok: false, error: "Faltan campos (thread_id, user_id, text)" });
+    if (req.method === "GET" && url.pathname === "/health") {
+      return send(res, 200, { ok: true });
     }
 
-    const out = await decide({ project_id, thread_id, user_id, node_id, text });
-    return json(res, 200, { ok: true, ...out });
-  }
+    // Auth
+    const reqAsFetch = new Request("http://local", { headers: new Headers(req.headers as any) });
+    if (url.pathname.startsWith("/v1/")) requireApiKey(reqAsFetch);
 
-  return json(res, 404, { ok: false, error: "Not found" });
-}).listen(PORT, () => {
-  console.log(`[nova.agi] listening on :${PORT}`);
+    // /v1/chat
+    if (req.method === "POST" && url.pathname === "/v1/chat") {
+      const body = await readJson(req);
+      const project_id = body.project_id;
+      const text = String(body.text || "");
+      if (!project_id || !text) return send(res, 400, { error: "Missing project_id or text" });
+
+      await logEvent({ project_id, type: "chat.user", source: "hocker.one", message: text, meta: { channel: "chat" } });
+
+      const actions = await decide({ project_id, node_id: body.node_id ?? null, text });
+      const reply = actions.find(a => a.type === "reply") as any;
+
+      if (reply?.text) {
+        await logEvent({ project_id, type: "chat.nova", source: "nova.agi", message: reply.text });
+        await remember({ project_id, kind: "chat", content: `USER: ${text}\nNOVA: ${reply.text}` }).catch(() => {});
+      }
+
+      return send(res, 200, { reply: reply?.text ?? "OK", actions });
+    }
+
+    // /v1/execute (instrucción → acciones + crea comandos)
+    if (req.method === "POST" && url.pathname === "/v1/execute") {
+      const body = await readJson(req);
+      const project_id = body.project_id;
+      const instruction = String(body.instruction || "");
+      const node_id = body.node_id ?? null;
+
+      if (!project_id || !instruction) return send(res, 400, { error: "Missing project_id or instruction" });
+
+      await logEvent({ project_id, type: "execute.request", source: "hocker.one", node_id, message: instruction });
+
+      const actions = await decide({ project_id, node_id, text: instruction });
+
+      // crear comandos en DB (needs_approval por default)
+      const created: any[] = [];
+      for (const a of actions) {
+        if (a.type !== "create_command") continue;
+
+        // Inserta como needs_approval (tu panel ya tiene aprobación → queued)
+        const { supabaseAdmin } = await import("./lib/supabase.js");
+        const sb = supabaseAdmin();
+
+        const { data, error } = await sb.from("commands").insert({
+          project_id,
+          node_id: a.node_id,
+          command: a.command,
+          payload: a.payload,
+          status: a.needs_approval ? "needs_approval" : "queued"
+        }).select("*").single();
+
+        if (error) throw error;
+        created.push(data);
+      }
+
+      const reply = actions.find(a => a.type === "reply") as any;
+      await logEvent({
+        project_id,
+        type: "execute.plan",
+        source: "nova.agi",
+        node_id,
+        message: reply?.text ?? "Plan generado",
+        meta: { created_commands: created.map(c => c.id) }
+      });
+
+      return send(res, 200, { actions, created_commands: created });
+    }
+
+    // /v1/synapse (evento genérico)
+    if (req.method === "POST" && url.pathname === "/v1/synapse") {
+      const body = await readJson(req);
+      const project_id = body.project_id;
+      if (!project_id) return send(res, 400, { error: "Missing project_id" });
+
+      await logEvent({
+        project_id,
+        type: String(body.type || "synapse.event"),
+        source: String(body.source || "api"),
+        node_id: body.node_id ?? null,
+        severity: body.severity ?? "info",
+        message: String(body.message || "event"),
+        meta: body.meta ?? {}
+      });
+
+      return send(res, 200, { ok: true });
+    }
+
+    return send(res, 404, { error: "Not found" });
+  } catch (e: any) {
+    const status = e?.status || 500;
+    return send(res, status, { error: e?.message || "Server error" });
+  }
 });
+
+server.listen(PORT, () => console.log(`nova.agi listening on ${PORT}`));
