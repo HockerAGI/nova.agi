@@ -1,12 +1,14 @@
-FROM node:20-slim
+FROM node:20-alpine
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci || npm i
+RUN npm i --omit=dev
 
-COPY . .
-RUN npm run build
+COPY tsconfig.json ./
+COPY src ./src
+
+RUN npm i -D typescript tsx @types/node && npm run build && npm prune --omit=dev
 
 ENV PORT=8080
 EXPOSE 8080
-CMD ["npm","start"]
+CMD ["node", "dist/index.js"]
