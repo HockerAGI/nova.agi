@@ -1,21 +1,15 @@
-import crypto from "node:crypto";
 import { config } from "../config.js";
+import type { Action } from "../types.js";
 import { supabase } from "./supabase.js";
 import { signCommandV2 } from "./security.js";
-import type { Action } from "../types.js";
-
-type Controls = { kill_switch: boolean; allow_write: boolean };
 
 const ALLOWED_COMMANDS = new Set(["ping", "status", "read_dir", "read_file_head"]);
-
-// Misma idea del panel: sensibles van a needs_approval (aunque aquí no los permitimos en allowlist)
-const SENSITIVE_COMMANDS = new Set(["run_sql", "shell.exec", "fs.write"]);
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-async function getControls(project_id: string): Promise<Controls> {
+async function getControls(project_id: string): Promise<{ kill_switch: boolean; allow_write: boolean }> {
   try {
     const { data } = await supabase
       .from("system_controls")
@@ -23,107 +17,97 @@ async function getControls(project_id: string): Promise<Controls> {
       .eq("project_id", project_id)
       .eq("id", "global")
       .maybeSingle();
-
-    return { kill_switch: Boolean(data?.kill_switch), allow_write: Boolean(data?.allow_write) };
+    return { kill_switch: Boolean((data as any)?.kill_switch), allow_write: Boolean((data as any)?.allow_write) };
   } catch {
-    // si aún no existe tabla/row, no frenamos el server
     return { kill_switch: false, allow_write: false };
   }
 }
 
-async function emitEvent(level: "info" | "warn" | "error", type: string, message: string, data?: any) {
-  try {
-    await supabase.from("events").insert({
-      project_id: config.commands.projectId,
-      node_id: "nova.agi",
-      level,
-      type,
-      message,
-      data: data ?? null
-    });
-  } catch {
-    // observabilidad best-effort, no tumba producción
-  }
+function sanitizeAction(action: any): Action | null {
+  if (!action || typeof action !== "object") return null;
+  const command = String(action.command || "").trim();
+  if (!ALLOWED_COMMANDS.has(command)) return null;
+  const node_id = action.node_id ? String(action.node_id) : undefined;
+  const payload = action.payload ?? {};
+  return { command, node_id, payload };
 }
 
-export async function executeActions(
-  project_id: string,
-  allowActionsHeaderValue: string | undefined,
-  allowActionsBody: boolean | undefined,
-  actions: Action[]
-) {
-  if (!config.actionsEnabled) return [];
+export async function enqueueActions(args: {
+  project_id: string;
+  allow_actions: boolean;
+  allow_actions_header: string | null;
+  actions: any[];
+}): Promise<{ enqueued: any[]; blocked: any[] }> {
+  const project_id = String(args.project_id || "global").trim() || "global";
 
-  // Seguridad: requiere header + body
-  if (config.actionsRequireHeader) {
-    if (allowActionsHeaderValue !== "1") return [];
-    if (allowActionsBody !== true) return [];
+  if (!config.actions.enabled) return { enqueued: [], blocked: args.actions || [] };
+  if (!args.allow_actions) return { enqueued: [], blocked: args.actions || [] };
+
+  if (config.actions.requireHeader) {
+    if (String(args.allow_actions_header || "") !== "1") {
+      return { enqueued: [], blocked: args.actions || [] };
+    }
   }
 
-  // Si no hay secreto, NO firmamos, NO encolamos (real y honesto)
-  const secret = config.commands.signingSecret;
-  if (!secret) {
-    await emitEvent("warn", "actions.disabled", "No hay COMMAND_HMAC_SECRET/HOCKER_COMMAND_SIGNING_SECRET. Acciones desactivadas.");
-    return [];
-  }
-
-  // Kill switch real
   const controls = await getControls(project_id);
-  if (controls.kill_switch) {
-    await emitEvent("warn", "actions.killswitch", "Kill Switch ON: acciones bloqueadas.", { project_id });
-    return [];
-  }
+  if (controls.kill_switch) return { enqueued: [], blocked: args.actions || [] };
+  if (!controls.allow_write) return { enqueued: [], blocked: args.actions || [] };
 
-  const results: any[] = [];
+  const clean = (Array.isArray(args.actions) ? args.actions : []).map(sanitizeAction).filter(Boolean) as Action[];
+  if (!clean.length) return { enqueued: [], blocked: args.actions || [] };
 
-  for (const a of actions || []) {
-    const command = String(a?.command || "").trim();
-    if (!ALLOWED_COMMANDS.has(command)) {
-      results.push({ ok: false, error: `Comando no permitido: ${command}` });
+  const enqueued: any[] = [];
+  const blocked: any[] = [];
+
+  for (const a of clean) {
+    const id = crypto.randomUUID();
+    const created_at = nowIso();
+    const node_id = (a.node_id || config.actions.defaultNodeId).trim();
+    const needs_approval = config.actions.defaultNeedsApproval;
+
+    const signature = signCommandV2(
+      config.commandHmacSecret,
+      id,
+      project_id,
+      node_id,
+      a.command,
+      a.payload ?? {},
+      created_at
+    );
+
+    const row = {
+      id,
+      project_id,
+      node_id,
+      status: needs_approval ? "needs_approval" : "queued",
+      needs_approval,
+      command: a.command,
+      payload: a.payload ?? {},
+      signature,
+      created_at
+    };
+
+    const { error } = await supabase.from("commands").insert(row);
+    if (error) {
+      blocked.push({ action: a, error: error.message });
       continue;
     }
 
-    const node_id = String(a?.node_id || config.commands.defaultNodeId).trim() || config.commands.defaultNodeId;
-    const payload = a?.payload ?? {};
+    enqueued.push({ id, node_id, command: a.command, needs_approval });
 
-    const id = crypto.randomUUID();
-    const created_at = nowIso();
-
-    const signature = signCommandV2(secret, id, project_id, node_id, command, payload, created_at);
-
-    const needs_approval = SENSITIVE_COMMANDS.has(command);
-    const status = needs_approval ? "needs_approval" : "queued";
-
+    // best-effort event
     try {
-      const { data, error } = await supabase
-        .from("commands")
-        .insert({
-          id,
-          project_id,
-          node_id,
-          command,
-          payload,
-          status,
-          needs_approval,
-          signature,
-          created_at
-        })
-        .select("id, status, node_id, command, created_at")
-        .single();
-
-      if (error) {
-        results.push({ ok: false, error: error.message, command });
-        await emitEvent("error", "actions.enqueue_error", "Error encolando comando", { command, error: error.message });
-        continue;
-      }
-
-      results.push({ ok: true, item: data });
-      await emitEvent("info", "actions.enqueued", "Acción encolada", { command, node_id, id });
-    } catch (e: any) {
-      results.push({ ok: false, error: String(e?.message || e), command });
-      await emitEvent("error", "actions.enqueue_exception", "Excepción encolando comando", { command, error: String(e?.message || e) });
+      await supabase.from("events").insert({
+        project_id,
+        actor_type: "system",
+        actor_id: "nova.agi",
+        type: "command.enqueued",
+        data: { command_id: id, node_id, command: a.command }
+      });
+    } catch {
+      // ignore
     }
   }
 
-  return results;
+  return { enqueued, blocked };
 }
