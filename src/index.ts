@@ -1,178 +1,187 @@
+import "dotenv/config";
 import Fastify from "fastify";
-import crypto from "node:crypto";
 
 import { config } from "./config.js";
-import { requireAuth } from "./lib/http.js";
+import type { ChatMessage, ChatRequest, ChatResponse, ErrorResponse, Prefer } from "./types.js";
+import { requireAuth, HttpError } from "./lib/http.js";
 import { chooseRoute } from "./lib/router.js";
-import { upsertThread, appendMessage, loadThread } from "./lib/memory.js";
-import { executeActions } from "./lib/actions.js";
-
-import { openaiChat } from "./providers/openai.js";
-import { geminiChat } from "./providers/gemini.js";
-
-import type { ChatRequest, ChatResponse, Action } from "./types.js";
-
-function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-}
-
-function safeJsonParse<T>(s: string): { ok: true; value: T } | { ok: false; error: string } {
-  try {
-    return { ok: true, value: JSON.parse(s) };
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? "JSON inválido" };
-  }
-}
-
-function extractJsonLoose(text: string) {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  return text.slice(start, end + 1);
-}
+import { pickAgi } from "./lib/agis.js";
+import { ensureThread, loadThread, appendMessage, toChatRole } from "./lib/memory.js";
+import { openaiRespond } from "./providers/openai.js";
+import { geminiRespond } from "./providers/gemini.js";
+import { enqueueActions } from "./lib/actions.js";
+import { recordUsage } from "./lib/usage.js";
 
 const app = Fastify({ logger: true });
 
-const SYSTEM_PROMPT = [
-  "Tu nombre es NOVA. Eres la IA central del ecosistema HOCKER.",
-  "Hablas claro, directo y profesional. Sin jerga técnica. Nada de humo.",
-  "",
-  "Reglas no negociables:",
-  "- No ayudas con espionaje, bypass, hacking, malware, fingerprint spoofing, ni automatización encubierta.",
-  "- Si algo depende de credenciales/infra, lo dices y dejas el sistema listo para conectar (sin inventar resultados).",
-  "",
-  "Modo chat:",
-  "- Responde en texto normal, útil y accionable.",
-  "",
-  "Modo planner/actions:",
-  "- Responde SOLO JSON válido con este formato:",
-  '  { "text": "mensaje", "actions": [ { "node_id":"...", "command":"ping|status|read_dir|read_file_head", "payload": { } , "reason":"..." } ] }',
-  "- Si no estás seguro, deja actions como [].",
-  "- Nunca inventes salidas de comandos. Solo propones acciones; los resultados vienen del agente real."
-].join("\n");
+function nowIso() {
+  return new Date().toISOString();
+}
 
-app.get("/health", async () => ({ ok: true }));
+function asString(v: any, def = "") {
+  const s = typeof v === "string" ? v : "";
+  return (s || def).trim();
+}
 
-app.post("/", async (req, reply) => {
-  return reply.code(404).send({ ok: false, error: "Usa POST /chat" });
-});
-
-app.post("/chat", async (req, reply) => {
+function safeJsonParse(text: string): any | null {
   try {
-    requireAuth(req.headers.authorization, config.orchestratorKey);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function titleFromMessage(message: string) {
+  const clean = message.replace(/\s+/g, " ").trim();
+  return clean.length <= 60 ? clean : clean.slice(0, 57) + "...";
+}
+
+function normalizePrefer(v: any): Prefer {
+  const s = String(v ?? "auto").trim().toLowerCase();
+  if (s === "openai" || s === "gemini" || s === "auto") return s as Prefer;
+  return "auto";
+}
+
+// Health check (Cloud Run / Render)
+app.get("/health", async () => ({ ok: true, service: "nova.agi", ts: nowIso() }));
+
+async function handleChat(req: any, reply: any) {
+  try {
+    requireAuth(req.headers?.authorization, config.orchestratorKey);
 
     const body = (req.body ?? {}) as ChatRequest;
+    const project_id = asString(body.project_id, "global") || "global";
+    const message = asString(body.message || body.text, "");
+    if (!message) throw new HttpError(400, { ok: false, error: "message requerido" });
 
-    const project_id = String(body.project_id ?? config.commands.projectId).trim() || config.commands.projectId;
+    let thread_id = asString(body.thread_id, "");
+    if (!thread_id) thread_id = crypto.randomUUID();
 
-    const rawThread = body.thread_id ? String(body.thread_id).trim() : "";
-    const thread_id = rawThread && isUuid(rawThread) ? rawThread : crypto.randomUUID();
+    const user_id = body.user_id ?? null;
+    const user_email = body.user_email ?? null;
 
-    const message = String(body.message ?? "").trim();
-    if (!message) return reply.code(400).send({ ok: false, error: "Falta message." });
+    const prefer = normalizePrefer(body.prefer);
+    const mode = body.mode ?? "auto";
 
-    const prefer = (body.prefer ?? "openai") as "openai" | "gemini";
-    const mode = (body.mode ?? "chat") as any;
+    const allow_actions_header = req.headers?.["x-allow-actions"] ? String(req.headers["x-allow-actions"]) : null;
+    const allow_actions = Boolean(body.allow_actions);
 
-    const wantJson = mode === "planner" || mode === "actions";
-    const allowActionsHeader = req.headers["x-allow-actions"] as string | undefined;
-    const allowActionsBody = Boolean(body.allow_actions);
-
-    // Thread: best-effort (si aún no migras tablas, no tumba)
-    await upsertThread(project_id, thread_id);
-
-    const prev = await loadThread(project_id, thread_id, 30);
-    const messages = [
-      ...prev.map((m) => ({ role: m.role, content: m.content })),
-      { role: "user" as const, content: message }
-    ];
-
-    // Guardamos el user message (best-effort)
+    // Persistencia (thread + user message)
+    await ensureThread({ project_id, thread_id, user_id, title: titleFromMessage(message) });
     await appendMessage(project_id, thread_id, "user", message);
 
-    // Route / AGI selection real (si tu router decide)
-    const route = chooseRoute({ message, prefer });
-    const modelPrefer = route.prefer ?? prefer;
+    // Contexto de memoria
+    const history = await loadThread(project_id, thread_id, 30);
+    const historyMessages: ChatMessage[] = history
+      .filter((m) => m.role !== "system")
+      .map((m) => ({ role: toChatRole(m.role), content: m.content }));
 
-    let assistantText = "";
-    let provider = modelPrefer;
-    let model = modelPrefer === "gemini" ? config.gemini.model : config.openai.model;
-    let raw: any = null;
-    let usage: any = null;
+    // Router
+    const route = await chooseRoute({ project_id, message, prefer, mode });
+    const agi = pickAgi(route.intent, message);
 
-    if (modelPrefer === "gemini") {
-      if (!config.gemini.apiKey) {
-        return reply.code(500).send({ ok: false, error: "Falta GEMINI_API_KEY." });
-      }
-      const res = await geminiChat({
-        apiKey: config.gemini.apiKey,
-        model: config.gemini.model,
-        system: SYSTEM_PROMPT,
-        messages,
-        wantJson
-      });
-      assistantText = res.assistantText;
-      raw = res.raw;
-      usage = res.usage;
-      provider = "gemini";
-      model = res.model ?? model;
+    const wantJson = allow_actions && config.actions.enabled;
+
+    const systemBase =
+      `${agi.system_prompt}\n\n` +
+      `Contexto:\n- project_id: ${project_id}\n- thread_id: ${thread_id}\n` +
+      (user_email ? `- user_email: ${user_email}\n` : "") +
+      `\nReglas:\n- Responde claro, directo, en español.\n- Si falta info, pregunta lo mínimo.\n`;
+
+    const system = wantJson
+      ? systemBase +
+        "\nIMPORTANTE: Responde SOLO en JSON válido. Debe incluir la palabra JSON en el contenido.\n" +
+        "Formato JSON esperado: {\"reply\": string, \"actions\": [{\"command\": string, \"payload\": any, \"node_id\"?: string}] }\n" +
+        "Si no hay acciones, actions=[] y reply siempre va."
+      : systemBase;
+
+    const messages: ChatMessage[] = [{ role: "system", content: system }, ...historyMessages];
+
+    // Evita duplicar el último user message del history (porque ya insertamos)
+    // Aun así, añadimos el mensaje actual explícitamente para el modelo.
+    messages.push({ role: "user", content: message });
+
+    // Provider
+    let outText = "";
+    let usage: { tokens_in?: number; tokens_out?: number } | undefined;
+
+    if (route.provider === "openai") {
+      const r = await openaiRespond({ apiKey: config.openai.apiKey, model: route.model, messages, jsonMode: wantJson });
+      outText = r.text;
+      usage = r.usage;
     } else {
-      if (!config.openai.apiKey) {
-        return reply.code(500).send({ ok: false, error: "Falta OPENAI_API_KEY." });
-      }
-      const res = await openaiChat({
-        apiKey: config.openai.apiKey,
-        model: config.openai.model,
-        system: SYSTEM_PROMPT,
-        messages,
-        wantJson
-      });
-      assistantText = res.assistantText;
-      raw = res.raw;
-      usage = res.usage;
-      provider = "openai";
-      model = res.model ?? model;
+      const r = await geminiRespond({ apiKey: config.gemini.apiKey, model: route.model, messages, jsonMode: wantJson });
+      outText = r.text;
+      usage = r.usage;
     }
 
-    // Extraer actions solo si es planner/actions
-    let actions: Action[] = [];
-    if (wantJson && config.actionsEnabled) {
-      const chunk = extractJsonLoose(assistantText);
-      const parsed = chunk ? safeJsonParse<any>(chunk) : { ok: false as const, error: "No JSON" };
-
-      if (parsed.ok && typeof parsed.value === "object" && parsed.value) {
-        if (typeof parsed.value.text === "string") assistantText = parsed.value.text;
-        if (Array.isArray(parsed.value.actions)) actions = parsed.value.actions;
+    // Parse JSON (si aplica)
+    let replyText = outText;
+    let actionsRaw: any[] = [];
+    if (wantJson) {
+      const obj = safeJsonParse(outText);
+      if (obj && typeof obj === "object") {
+        if (typeof obj.reply === "string") replyText = obj.reply;
+        else if (typeof obj.text === "string") replyText = obj.text;
+        actionsRaw = Array.isArray(obj.actions) ? obj.actions : [];
       }
     }
 
-    // Ejecutar acciones REALES (encolar en Supabase) con header+body+KillSwitch
-    const action_results =
-      actions.length > 0
-        ? await executeActions(project_id, allowActionsHeader, allowActionsBody, actions)
-        : [];
+    // Enqueue actions (seguro)
+    const actionResult = await enqueueActions({
+      project_id,
+      allow_actions,
+      allow_actions_header,
+      actions: actionsRaw
+    });
 
-    // Guardamos respuesta (best-effort)
-    await appendMessage(project_id, thread_id, "assistant", assistantText);
+    // Persist assistant message (role "nova" para que el panel lo pinte como NOVA)
+    await appendMessage(project_id, thread_id, "nova", replyText);
 
-    const out: ChatResponse = {
-      ok: true,
+    // Usage best-effort
+    await recordUsage({
+      project_id,
       thread_id,
-      text: assistantText,
-      actions: actions.length ? actions : undefined,
-      action_results: action_results.length ? action_results : undefined,
-      provider,
-      model
+      provider: route.provider,
+      model: route.model,
+      tokens_in: usage?.tokens_in,
+      tokens_out: usage?.tokens_out,
+      meta: { intent: route.intent, agi_id: agi.id, reason: route.reason }
+    });
+
+    const res: ChatResponse = {
+      ok: true,
+      project_id,
+      thread_id,
+      provider: route.provider,
+      model: route.model,
+      intent: route.intent,
+      agi_id: agi.id,
+      reply: replyText,
+      actions: actionResult.enqueued,
+      meta: {
+        router_reason: route.reason,
+        want_json: wantJson,
+        blocked_actions: actionResult.blocked?.length ? actionResult.blocked : undefined
+      }
     };
 
-    return reply.code(200).send(out);
+    return reply.code(200).send(res);
   } catch (e: any) {
-    const msg = String(e?.message || e);
-    return reply.code(401).send({ ok: false, error: msg });
-  }
-});
+    const status = e instanceof HttpError ? e.status : 500;
+    const payload: ErrorResponse =
+      e instanceof HttpError ? e.payload : { ok: false, error: String(e?.message || e || "server_error") };
 
-app.listen({ port: config.port, host: "0.0.0.0" }).catch((err) => {
-  app.log.error(err);
+    req.log.error({ err: e }, "chat_error");
+    return reply.code(status).send(payload);
+  }
+}
+
+// Compat: /chat y /v1/chat
+app.post("/chat", handleChat);
+app.post("/v1/chat", handleChat);
+
+app.listen({ port: config.port, host: "0.0.0.0" }).catch((e) => {
+  app.log.error(e);
   process.exit(1);
 });
