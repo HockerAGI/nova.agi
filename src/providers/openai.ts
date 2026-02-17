@@ -1,90 +1,134 @@
-type Msg = { role: string; content: string };
+import type { ChatMessage } from "../types.js";
 
-type OpenAIChatArgs = {
-  apiKey: string;
-  model: string;
-  system: string;
-  messages: Msg[];
-  wantJson?: boolean;
+export type OpenAiResult = {
+  text: string;
+  usage?: { tokens_in?: number; tokens_out?: number };
+  raw?: any;
 };
 
-function pickTextFromResponses(data: any): string {
-  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
+function getJson(res: Response) {
+  return res
+    .text()
+    .then((t) => {
+      try {
+        return { ok: true, json: JSON.parse(t), text: t };
+      } catch {
+        return { ok: false, json: null, text: t };
+      }
+    })
+    .catch(() => ({ ok: false, json: null, text: "" }));
+}
 
-  // fallback genérico: busca texto en output
-  const out = data?.output;
+function extractResponsesText(payload: any): string {
+  // Respuestas suelen traer output_text directo, pero también puede venir en output[].content[].text
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) return payload.output_text;
+  const out = payload?.output;
   if (Array.isArray(out)) {
     for (const item of out) {
       const content = item?.content;
       if (Array.isArray(content)) {
-        const t = content.find((c: any) => c?.type === "output_text" && typeof c?.text === "string")?.text;
-        if (t) return t;
+        for (const c of content) {
+          const t = c?.text;
+          if (typeof t === "string" && t.trim()) return t;
+        }
       }
     }
   }
   return "";
 }
 
-function pickTextFromChat(data: any): string {
-  const t = data?.choices?.[0]?.message?.content;
+function extractChatText(payload: any): string {
+  const t = payload?.choices?.[0]?.message?.content;
   return typeof t === "string" ? t : "";
 }
 
-export async function openaiChat(args: OpenAIChatArgs): Promise<{
-  assistantText: string;
-  raw: any;
-  usage: any;
-  model?: string;
-}> {
-  const { apiKey, model, system, messages, wantJson } = args;
+export async function openaiRespond(args: {
+  apiKey: string;
+  model: string;
+  messages: ChatMessage[];
+  jsonMode?: boolean;
+  temperature?: number;
+}): Promise<OpenAiResult> {
+  const { apiKey, model, messages } = args;
+  const jsonMode = Boolean(args.jsonMode);
+  const temperature = typeof args.temperature === "number" ? args.temperature : 0.2;
 
-  const headers = {
-    "content-type": "application/json",
-    authorization: `Bearer ${apiKey}`
-  };
-
-  // 1) Intento: Responses API
+  // 1) Responses API (preferido)
   try {
+    const body: any = {
+      model,
+      input: messages.map((m) => ({ role: m.role, content: m.content })),
+      temperature
+    };
+
+    if (jsonMode) {
+      // JSON mode en Responses API: text.format.type = "json_object".
+      body.text = { format: { type: "json_object" } };
+    }
+
     const r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
-      headers,
-      body: JSON.stringify({
-        model,
-        instructions: system,
-        input: messages,
-        temperature: 0.2,
-        response_format: wantJson ? { type: "json_object" } : undefined
-      })
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body)
     });
 
-    const data = await r.json().catch(() => ({}));
-    if (r.ok) {
-      const assistantText = pickTextFromResponses(data) || "";
-      return { assistantText: assistantText || "No pude generar respuesta.", raw: data, usage: data?.usage ?? null, model };
+    const parsed = await getJson(r);
+    if (!r.ok) {
+      const msg = (parsed.json as any)?.error?.message || parsed.text || `OpenAI error (${r.status})`;
+      // Si la API no está disponible para esta key/model, hacemos fallback a Chat Completions.
+      throw new Error(msg);
     }
-    // si falla, caemos al fallback
+
+    const payload = parsed.json;
+    const text = extractResponsesText(payload) || JSON.stringify(payload);
+    const usage = payload?.usage
+      ? {
+          tokens_in: Number(payload.usage?.input_tokens ?? 0) || undefined,
+          tokens_out: Number(payload.usage?.output_tokens ?? 0) || undefined
+        }
+      : undefined;
+
+    return { text, usage, raw: payload };
   } catch {
-    // ignore -> fallback
-  }
-
-  // 2) Fallback: Chat Completions
-  const r2 = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+    // 2) Fallback: Chat Completions
+    const body: any = {
       model,
-      temperature: 0.2,
-      response_format: wantJson ? { type: "json_object" } : undefined,
-      messages: [{ role: "system", content: system }, ...messages]
-    })
-  });
+      messages,
+      temperature
+    };
 
-  const data2 = await r2.json().catch(() => ({}));
-  if (!r2.ok) {
-    const err = data2?.error?.message || "OpenAI error";
-    throw new Error(err);
+    if (jsonMode) {
+      // JSON mode para Chat Completions: response_format.json_object.
+      body.response_format = { type: "json_object" };
+    }
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+    const parsed = await getJson(r);
+    if (!r.ok) {
+      const msg = (parsed.json as any)?.error?.message || parsed.text || `OpenAI error (${r.status})`;
+      throw new Error(msg);
+    }
+
+    const payload = parsed.json;
+    const text = extractChatText(payload) || JSON.stringify(payload);
+    const usage = payload?.usage
+      ? {
+          tokens_in: Number(payload.usage?.prompt_tokens ?? 0) || undefined,
+          tokens_out: Number(payload.usage?.completion_tokens ?? 0) || undefined
+        }
+      : undefined;
+
+    return { text, usage, raw: payload };
   }
-
-  const assistantText = pickTextFromChat(data2) || "No pude generar respuesta.";
-  return { assistantText, raw: data2, usage: data2?.usage ?? null, model };
 }
