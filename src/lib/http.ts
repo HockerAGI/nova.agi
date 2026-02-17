@@ -1,23 +1,32 @@
-import { config } from "../config.js";
-
-export function getOrchestratorKey(req: any): string {
-  const auth = String(req.headers?.authorization ?? "");
-  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
-  return String(req.headers?.["x-hocker-key"] ?? "").trim();
+export class HttpError extends Error {
+  status: number;
+  payload: any;
+  constructor(status: number, payload: any) {
+    super(typeof payload?.error === "string" ? payload.error : "http_error");
+    this.status = status;
+    this.payload = payload;
+  }
 }
 
-export function requireOrchestratorAuth(req: any) {
-  const key = getOrchestratorKey(req);
-  if (!key) return { ok: false as const, status: 401, error: "Missing auth (Bearer or x-hocker-key)" };
-  if (key !== config.orchestratorKey) return { ok: false as const, status: 403, error: "Invalid orchestrator key" };
-  return { ok: true as const };
+export function bearerToken(authorization?: string | null): string | null {
+  if (!authorization) return null;
+  const s = String(authorization).trim();
+  if (!s) return null;
+  const parts = s.split(/\s+/);
+  if (parts.length === 2 && parts[0].toLowerCase() === "bearer" && parts[1]) return parts[1];
+  return null;
 }
 
-export function normalizeProjectId(pid: any, fallback: string) {
-  const s = String(pid ?? "").trim();
-  return s ? s : fallback;
+// Auth duro para orquestación (hocker.one -> nova.agi)
+export function requireAuth(authorization: string | undefined, expectedKey: string) {
+  const token = bearerToken(authorization);
+  if (!token) throw new HttpError(401, { ok: false, error: "Missing Authorization: Bearer <key>" });
+  if (token !== expectedKey) throw new HttpError(403, { ok: false, error: "Invalid orchestrator key" });
 }
 
-export function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-}
+// Compat con el nombre previo
+export const requireOrchestratorAuth = (req: { headers: Record<string, any> }, expectedKey?: string) => {
+  const auth = (req as any)?.headers?.authorization ?? (req as any)?.headers?.Authorization;
+  if (!expectedKey) throw new HttpError(500, { ok: false, error: "Server misconfigured (missing orchestrator key)" });
+  requireAuth(String(auth ?? ""), expectedKey);
+};
