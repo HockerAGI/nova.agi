@@ -1,79 +1,113 @@
-import "dotenv/config";
 import { z } from "zod";
 
-const Env = z.object({
-  NODE_ENV: z.string().optional(),
+const Bool = z
+  .string()
+  .optional()
+  .transform((v) => {
+    const s = String(v ?? "").trim().toLowerCase();
+    return s === "1" || s === "true" || s === "yes" || s === "on";
+  });
 
-  PORT: z.coerce.number().default(8787),
+// Nota: hocker.one usa NOVA_ORCHESTRATOR_KEY, pero este servicio también acepta ORCHESTRATOR_KEY.
+const Schema = z.object({
+  port: z.coerce.number().int().positive().default(8080),
+  orchestratorKey: z.string().min(16),
 
-  // Auth para que SOLO tu panel pueda pegarle
-  NOVA_ORCHESTRATOR_KEY: z.string().min(10),
+  // Supabase (service role) para memoria + enqueue commands
+  supabase: z.object({
+    url: z.string().url(),
+    serviceRoleKey: z.string().min(20)
+  }),
 
-  // Providers
-  OPENAI_API_KEY: z.string().optional(),
-  OPENAI_MODEL: z.string().default("gpt-4.1-mini"),
+  // Firma HMAC para commands (debe ser EXACTAMENTE igual al Node Agent)
+  commandHmacSecret: z.string().min(24),
 
-  GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default("gemini-1.5-flash"),
+  // Provider keys
+  openai: z.object({
+    apiKey: z.string().min(20),
+    modelBase: z.string().min(1),
+    modelFast: z.string().min(1).optional(),
+    modelPro: z.string().min(1).optional()
+  }),
+  gemini: z.object({
+    apiKey: z.string().min(10),
+    modelBase: z.string().min(1),
+    modelFast: z.string().min(1).optional(),
+    modelPro: z.string().min(1).optional()
+  }),
 
-  // Supabase
-  SUPABASE_URL: z.string().url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
+  // Router/budgets (opcional)
+  budgets: z
+    .object({
+      enabled: z.boolean().default(false),
+      openaiMonthlyTokens: z.number().int().positive().default(250000),
+      geminiMonthlyTokens: z.number().int().positive().default(250000)
+    })
+    .default({ enabled: false, openaiMonthlyTokens: 250000, geminiMonthlyTokens: 250000 }),
 
-  // Firma de comandos (DEBE match con hocker.one + agent)
-  COMMAND_HMAC_SECRET: z.string().optional(),
-  HOCKER_COMMAND_SIGNING_SECRET: z.string().optional(), // legacy fallback
-
-  // Defaults
-  HOCKER_PROJECT_ID: z.string().default("global"),
-  HOCKER_DEFAULT_NODE_ID: z.string().default("hocker-node-1"),
-
-  // Actions
-  ACTIONS_ENABLED: z.coerce.boolean().default(true),
-  ACTIONS_REQUIRE_HEADER: z.coerce.boolean().default(true)
+  // Actions (seguro): solo encola comandos si allow_actions=true y esta bandera está activa
+  actions: z
+    .object({
+      enabled: z.boolean().default(true),
+      defaultNeedsApproval: z.boolean().default(true),
+      defaultNodeId: z.string().min(1).default("hocker-node-1"),
+      requireHeader: z.boolean().default(true)
+    })
+    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-node-1", requireHeader: true })
 });
 
-const parsed = Env.safeParse(process.env);
-if (!parsed.success) {
-  // error claro, sin humo
-  console.error("ENV inválido:", parsed.error.flatten().fieldErrors);
-  process.exit(1);
-}
+export type Config = z.infer<typeof Schema>;
 
-const e = parsed.data;
+export const config: Config = Schema.parse({
+  port: process.env.PORT ?? 8080,
 
-function pickSigningSecret() {
-  const v = (e.COMMAND_HMAC_SECRET || e.HOCKER_COMMAND_SIGNING_SECRET || "").trim();
-  return v || null;
-}
-
-export const config = {
-  env: e.NODE_ENV || "production",
-  port: e.PORT,
-
-  orchestratorKey: e.NOVA_ORCHESTRATOR_KEY,
-
-  openai: {
-    apiKey: e.OPENAI_API_KEY || null,
-    model: e.OPENAI_MODEL
-  },
-
-  gemini: {
-    apiKey: e.GEMINI_API_KEY || null,
-    model: e.GEMINI_MODEL
-  },
+  // Compat
+  orchestratorKey:
+    process.env.NOVA_ORCHESTRATOR_KEY ??
+    process.env.ORCHESTRATOR_KEY ??
+    process.env.HOCKER_ORCHESTRATOR_KEY,
 
   supabase: {
-    url: e.SUPABASE_URL,
-    serviceRoleKey: e.SUPABASE_SERVICE_ROLE_KEY
+    url: process.env.SUPABASE_URL,
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY
   },
 
-  commands: {
-    signingSecret: pickSigningSecret(), // puede ser null si aún no lo configuras (acciones se desactivan solas)
-    projectId: e.HOCKER_PROJECT_ID,
-    defaultNodeId: e.HOCKER_DEFAULT_NODE_ID
+  commandHmacSecret: process.env.COMMAND_HMAC_SECRET,
+
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY,
+    modelBase: process.env.OPENAI_MODEL ?? "gpt-5",
+    modelFast: process.env.OPENAI_MODEL_FAST,
+    modelPro: process.env.OPENAI_MODEL_PRO
+  },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY,
+    modelBase: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
+    modelFast: process.env.GEMINI_MODEL_FAST,
+    modelPro: process.env.GEMINI_MODEL_PRO
   },
 
-  actionsEnabled: Boolean(e.ACTIONS_ENABLED),
-  actionsRequireHeader: Boolean(e.ACTIONS_REQUIRE_HEADER)
-};
+  budgets: {
+    enabled: Bool.parse(process.env.BUDGETS_ENABLED),
+    openaiMonthlyTokens: Number(process.env.BUDGET_OPENAI_TOKENS ?? 250000),
+    geminiMonthlyTokens: Number(process.env.BUDGET_GEMINI_TOKENS ?? 250000)
+  },
+
+  actions: {
+    enabled: Bool.parse(process.env.ACTIONS_ENABLED),
+    defaultNeedsApproval: Bool.parse(process.env.ACTIONS_NEED_APPROVAL),
+    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-node-1",
+    requireHeader: Bool.parse(process.env.ACTIONS_REQUIRE_HEADER)
+  }
+});
+
+export function modelFor(provider: "openai" | "gemini", mode: "auto" | "fast" | "pro"): string {
+  if (provider === "openai") {
+    if (mode === "fast") return config.openai.modelFast || config.openai.modelBase;
+    if (mode === "pro") return config.openai.modelPro || config.openai.modelBase;
+    return config.openai.modelBase;
+  }
+  if (mode === "fast") return config.gemini.modelFast || config.gemini.modelBase;
+  if (mode === "pro") return config.gemini.modelPro || config.gemini.modelBase;
+  return config.gemini.modelBase;
+}
