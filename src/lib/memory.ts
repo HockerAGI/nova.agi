@@ -1,81 +1,40 @@
-import crypto from "node:crypto";
 import { supabase } from "./supabase.js";
+
+export type DbRole = "system" | "user" | "assistant" | "nova";
 
 export type NovaDbMessage = {
   id: string;
   project_id: string;
   thread_id: string;
-  role: "system" | "user" | "assistant";
+  role: DbRole;
   content: string;
   created_at: string;
 };
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function looksLikeMissingColumn(msg: string) {
-  return msg.toLowerCase().includes("updated_at") && msg.toLowerCase().includes("column");
-}
-
-function looksLikeMissingTable(msg: string) {
-  const m = msg.toLowerCase();
-  return m.includes("does not exist") || m.includes("relation") || m.includes("table");
-}
-
-export async function upsertThread(project_id: string, thread_id: string) {
-  const t = nowIso();
-
-  // Intento 1: con updated_at (si ya migraste)
+export async function ensureThread(args: { project_id: string; thread_id: string; user_id?: string | null; title?: string | null }) {
+  // Best-effort: si tablas no existen aún, no tronamos.
   try {
-    const { error } = await supabase.from("nova_threads").upsert(
-      {
-        id: thread_id,
-        project_id,
-        updated_at: t
-      },
-      { onConflict: "id" }
-    );
-    if (!error) return;
-    throw error;
-  } catch (e: any) {
-    const msg = String(e?.message || e);
-
-    // Intento 2: si aún no existe updated_at, reintenta sin eso
-    if (looksLikeMissingColumn(msg)) {
-      try {
-        await supabase.from("nova_threads").upsert(
-          {
-            id: thread_id,
-            project_id
-          },
-          { onConflict: "id" }
-        );
-        return;
-      } catch {
-        return; // best-effort
-      }
-    }
-
-    // Si no existe tabla todavía, no rompemos
-    if (looksLikeMissingTable(msg)) return;
-
-    // Otros errores: igual no tumbamos, pero se puede ver en logs
-    return;
+    await supabase
+      .from("nova_threads")
+      .upsert(
+        {
+          id: args.thread_id,
+          project_id: args.project_id,
+          user_id: args.user_id ?? null,
+          title: args.title ?? null
+        },
+        { onConflict: "id" }
+      );
+  } catch {
+    // ignore
   }
 }
 
-export async function appendMessage(project_id: string, thread_id: string, role: NovaDbMessage["role"], content: string) {
+export async function appendMessage(project_id: string, thread_id: string, role: DbRole, content: string) {
   try {
-    await supabase.from("nova_messages").insert({
-      id: crypto.randomUUID(),
-      project_id,
-      thread_id,
-      role,
-      content
-    });
+    await supabase.from("nova_messages").insert({ project_id, thread_id, role, content });
   } catch {
-    // best-effort (si aún no está la tabla, no tronamos)
+    // ignore
   }
 }
 
@@ -89,9 +48,14 @@ export async function loadThread(project_id: string, thread_id: string, limit = 
       .order("created_at", { ascending: true })
       .limit(limit);
 
-    if (error) return [];
-    return (data as any) ?? [];
+    if (error || !data) return [];
+    return data as any;
   } catch {
     return [];
   }
+}
+
+export function toChatRole(role: DbRole): "system" | "user" | "assistant" {
+  if (role === "nova") return "assistant";
+  return role;
 }
