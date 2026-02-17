@@ -1,31 +1,35 @@
-# nova.agi (NOVA Orchestrator)
+# nova.agi
 
-Orquestador dual (OpenAI + Gemini) con:
-- Auto-router por intención (code / research / ops / general)
-- Memoria persistente en Supabase: nova_threads / nova_messages
-- Multi-proyecto: project_id + thread_id
-- Tracking de uso en llm_usage (tokens estimados si no hay usage real)
-- Acciones opcionales (seguras): events + enqueue_command
+Servicio de orquestación para NOVA (API HTTP) que:
+
+- Recibe requests desde **hocker.one**
+- Decide provider/model (OpenAI/Gemini) con router simple
+- Guarda memoria en Supabase (`nova_threads`, `nova_messages`)
+- Registra uso en `llm_usage`
+- (Opcional) Encola acciones seguras en `commands` cuando `allow_actions=true`
 
 ## Endpoints
-- GET  /health
-- POST /v1/seed   (Authorization: Bearer NOVA_ORCHESTRATOR_KEY)
-- POST /v1/chat   (Authorization: Bearer NOVA_ORCHESTRATOR_KEY)
 
-## Body /v1/chat
-Acepta:
-- message (preferido) o text (compat)
-- project_id, thread_id (uuid)
-- prefer: "openai" | "gemini" | "auto"
-- mode: "fast" | "pro" | "auto"
+- `GET /health` → health check
+- `POST /chat` → chat
+- `POST /v1/chat` → alias compatible
 
-## Run
-- npm i
-- cp .env.example .env.local (pon tus keys reales)
-- npm run build
-- node dist/index.js
+## Auth
 
-## Nota clave
-Tu hocker.one debe mandar:
-Authorization: Bearer <NOVA_ORCHESTRATOR_KEY>
-(o x-hocker-key)
+Requiere header:
+
+`Authorization: Bearer <NOVA_ORCHESTRATOR_KEY>`
+
+## Request
+
+```json
+{
+  "project_id": "global",
+  "thread_id": "<uuid opcional>",
+  "message": "hola",
+  "prefer": "auto|openai|gemini",
+  "mode": "auto|fast|pro",
+  "allow_actions": false,
+  "user_id": null,
+  "user_email": null
+}
