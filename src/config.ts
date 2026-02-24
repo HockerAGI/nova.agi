@@ -19,6 +19,9 @@ const Schema = z.object({
 
   commandHmacSecret: z.string().min(24),
 
+  // NUEVO: URL de tu panel de control para despertar a la nube en caso de emergencia
+  hockerOneApiUrl: z.string().url().default("https://hocker.one"),
+
   langfuse: z.object({
     publicKey: z.string().min(5).default("dummy_pk"),
     secretKey: z.string().min(5).default("dummy_sk"),
@@ -50,29 +53,26 @@ const Schema = z.object({
     .object({
       enabled: z.boolean().default(true),
       defaultNeedsApproval: z.boolean().default(true),
-      // CORRECCIÓN: Respetamos tu nodo físico local por defecto. La nube es opcional.
-      defaultNodeId: z.string().min(1).default("hocker-node-1"), 
+      defaultNodeId: z.string().min(1).default("hocker-node-1"), // Tu nodo físico
+      fallbackNodeId: z.string().min(1).default("hocker-fabric"), // NUEVO: La Nube
       requireHeader: z.boolean().default(true)
     })
-    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-node-1", requireHeader: true })
+    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-node-1", fallbackNodeId: "hocker-fabric", requireHeader: true })
 });
 
 export type Config = z.infer<typeof Schema>;
 
 export const config: Config = Schema.parse({
   port: process.env.PORT ?? 8080,
-
-  orchestratorKey:
-    process.env.NOVA_ORCHESTRATOR_KEY ??
-    process.env.ORCHESTRATOR_KEY ??
-    process.env.HOCKER_ORCHESTRATOR_KEY,
-
+  orchestratorKey: process.env.NOVA_ORCHESTRATOR_KEY ?? process.env.ORCHESTRATOR_KEY ?? process.env.HOCKER_ORCHESTRATOR_KEY,
+  
   supabase: {
     url: process.env.SUPABASE_URL,
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY
   },
-
+  
   commandHmacSecret: process.env.COMMAND_HMAC_SECRET,
+  hockerOneApiUrl: process.env.HOCKER_ONE_URL || "https://hocker.one", // URL donde alojes tu panel web
 
   langfuse: {
     publicKey: process.env.LANGFUSE_PUBLIC_KEY || "dummy_pk",
@@ -102,7 +102,8 @@ export const config: Config = Schema.parse({
   actions: {
     enabled: Bool.parse(process.env.ACTIONS_ENABLED),
     defaultNeedsApproval: Bool.parse(process.env.ACTIONS_NEED_APPROVAL),
-    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-node-1", // Físico por defecto
+    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-node-1",
+    fallbackNodeId: process.env.FALLBACK_NODE_ID ?? "hocker-fabric",
     requireHeader: Bool.parse(process.env.ACTIONS_REQUIRE_HEADER)
   }
 });
