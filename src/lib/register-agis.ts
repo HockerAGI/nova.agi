@@ -9,7 +9,7 @@ export async function seedAgis(project_id: string) {
     project_id,
     name: a.name,
     role: a.kind,
-    status: "offline",
+    status: "offline", // Las AGIs nacen offline hasta que Hostia o NOVA las invocan
     endpoint_url: null,
     metadata: { level: a.level, parent_id: a.parent_id ?? null, tags: a.tags }
   }));
