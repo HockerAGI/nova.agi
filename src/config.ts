@@ -12,23 +12,19 @@ const Schema = z.object({
   port: z.coerce.number().int().positive().default(8080),
   orchestratorKey: z.string().min(16),
 
-  // Supabase (service role) para memoria + enqueue commands
   supabase: z.object({
     url: z.string().url(),
     serviceRoleKey: z.string().min(20)
   }),
 
-  // Firma HMAC para commands (Alineado con VERTX y Cloudflare Tunnels)
   commandHmacSecret: z.string().min(24),
 
-  // Observabilidad Cuántica (Syntia / Langfuse)
   langfuse: z.object({
     publicKey: z.string().min(5).default("dummy_pk"),
     secretKey: z.string().min(5).default("dummy_sk"),
     baseUrl: z.string().url().default("https://cloud.langfuse.com")
   }),
 
-  // Provider keys
   openai: z.object({
     apiKey: z.string().min(20),
     modelBase: z.string().min(1),
@@ -54,10 +50,11 @@ const Schema = z.object({
     .object({
       enabled: z.boolean().default(true),
       defaultNeedsApproval: z.boolean().default(true),
-      defaultNodeId: z.string().min(1).default("hocker-fabric"), // ACTUALIZADO PARA AUTOMATION FABRIC
+      // CORRECCIÓN: Respetamos tu nodo físico local por defecto. La nube es opcional.
+      defaultNodeId: z.string().min(1).default("hocker-node-1"), 
       requireHeader: z.boolean().default(true)
     })
-    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-fabric", requireHeader: true })
+    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-node-1", requireHeader: true })
 });
 
 export type Config = z.infer<typeof Schema>;
@@ -105,7 +102,7 @@ export const config: Config = Schema.parse({
   actions: {
     enabled: Bool.parse(process.env.ACTIONS_ENABLED),
     defaultNeedsApproval: Bool.parse(process.env.ACTIONS_NEED_APPROVAL),
-    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-fabric",
+    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-node-1", // Físico por defecto
     requireHeader: Bool.parse(process.env.ACTIONS_REQUIRE_HEADER)
   }
 });
