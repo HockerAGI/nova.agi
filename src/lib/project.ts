@@ -8,6 +8,6 @@ export function defaultProjectId(): string {
 }
 
 export function defaultNodeId(): string {
-  // ACTUALIZADO: Apuntando a la infraestructura Zero-Trust por defecto, no a un nodo físico obsoleto.
-  return (process.env.DEFAULT_NODE_ID ?? "hocker-fabric").trim();
+  // CORRECCIÓN: Respetamos el nodo físico como predeterminado (hocker-node-1)
+  return (process.env.DEFAULT_NODE_ID ?? "hocker-node-1").trim();
 }
