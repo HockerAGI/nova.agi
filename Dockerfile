@@ -1,24 +1,35 @@
-# -------- Builder --------
+# Usa una imagen ligera de Node.js
 FROM node:20-slim AS builder
+
 WORKDIR /app
 
-COPY package.json package-lock.json* tsconfig.json ./
-COPY src ./src
+# Instalar dependencias
+COPY package.json package-lock.json ./
+RUN npm install
 
-RUN npm install --no-audit --no-fund
+# Copiar el código y construir
+COPY . .
 RUN npm run build
 
-# -------- Runner --------
-FROM node:20-slim AS runner
+# Imagen de producción
+FROM node:20-slim
+
+# Instalar dumb-init para un manejo correcto de señales y evitar procesos zombis
+RUN apt-get update && apt-get install -y dumb-init && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-ENV NODE_ENV=production
-ENV PORT=8080
-
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
-
+# Copiar artefactos construidos
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY package.json ./
+
+# Seguridad Vertx: Crear usuario no-root
+RUN useradd -m hocker
+USER hocker
 
 EXPOSE 8080
-CMD ["node","dist/index.js"]
+
+# Usar dumb-init como PID 1
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["node", "dist/index.js"]
