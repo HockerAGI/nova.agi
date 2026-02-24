@@ -8,7 +8,6 @@ const Bool = z
     return s === "1" || s === "true" || s === "yes" || s === "on";
   });
 
-// Nota: hocker.one usa NOVA_ORCHESTRATOR_KEY, pero este servicio también acepta ORCHESTRATOR_KEY.
 const Schema = z.object({
   port: z.coerce.number().int().positive().default(8080),
   orchestratorKey: z.string().min(16),
@@ -19,8 +18,15 @@ const Schema = z.object({
     serviceRoleKey: z.string().min(20)
   }),
 
-  // Firma HMAC para commands (debe ser EXACTAMENTE igual al Node Agent)
+  // Firma HMAC para commands (Alineado con VERTX y Cloudflare Tunnels)
   commandHmacSecret: z.string().min(24),
+
+  // Observabilidad Cuántica (Syntia / Langfuse)
+  langfuse: z.object({
+    publicKey: z.string().min(5).default("dummy_pk"),
+    secretKey: z.string().min(5).default("dummy_sk"),
+    baseUrl: z.string().url().default("https://cloud.langfuse.com")
+  }),
 
   // Provider keys
   openai: z.object({
@@ -36,7 +42,6 @@ const Schema = z.object({
     modelPro: z.string().min(1).optional()
   }),
 
-  // Router/budgets (opcional)
   budgets: z
     .object({
       enabled: z.boolean().default(false),
@@ -45,15 +50,14 @@ const Schema = z.object({
     })
     .default({ enabled: false, openaiMonthlyTokens: 250000, geminiMonthlyTokens: 250000 }),
 
-  // Actions (seguro): solo encola comandos si allow_actions=true y esta bandera está activa
   actions: z
     .object({
       enabled: z.boolean().default(true),
       defaultNeedsApproval: z.boolean().default(true),
-      defaultNodeId: z.string().min(1).default("hocker-node-1"),
+      defaultNodeId: z.string().min(1).default("hocker-fabric"), // ACTUALIZADO PARA AUTOMATION FABRIC
       requireHeader: z.boolean().default(true)
     })
-    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-node-1", requireHeader: true })
+    .default({ enabled: true, defaultNeedsApproval: true, defaultNodeId: "hocker-fabric", requireHeader: true })
 });
 
 export type Config = z.infer<typeof Schema>;
@@ -61,7 +65,6 @@ export type Config = z.infer<typeof Schema>;
 export const config: Config = Schema.parse({
   port: process.env.PORT ?? 8080,
 
-  // Compat
   orchestratorKey:
     process.env.NOVA_ORCHESTRATOR_KEY ??
     process.env.ORCHESTRATOR_KEY ??
@@ -74,9 +77,15 @@ export const config: Config = Schema.parse({
 
   commandHmacSecret: process.env.COMMAND_HMAC_SECRET,
 
+  langfuse: {
+    publicKey: process.env.LANGFUSE_PUBLIC_KEY || "dummy_pk",
+    secretKey: process.env.LANGFUSE_SECRET_KEY || "dummy_sk",
+    baseUrl: process.env.LANGFUSE_BASE_URL || "https://cloud.langfuse.com"
+  },
+
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
-    modelBase: process.env.OPENAI_MODEL ?? "gpt-5",
+    modelBase: process.env.OPENAI_MODEL ?? "gpt-4o",
     modelFast: process.env.OPENAI_MODEL_FAST,
     modelPro: process.env.OPENAI_MODEL_PRO
   },
@@ -96,7 +105,7 @@ export const config: Config = Schema.parse({
   actions: {
     enabled: Bool.parse(process.env.ACTIONS_ENABLED),
     defaultNeedsApproval: Bool.parse(process.env.ACTIONS_NEED_APPROVAL),
-    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-node-1",
+    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-fabric",
     requireHeader: Bool.parse(process.env.ACTIONS_REQUIRE_HEADER)
   }
 });
