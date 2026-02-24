@@ -1,82 +1,68 @@
-import { supabaseAdmin } from "./supabase.js";
+import { openaiRespond } from "../providers/openai.js";
+import { geminiRespond } from "../providers/gemini.js";
+import { config, modelFor } from "../config.js";
+import type { Prefer, Intent } from "../types.js";
+import { parseStableJson } from "./stable-json.js";
 
-type DecideInput = {
-  project_id: string;
-  node_id?: string | null;
-  text: string;
+type Decision = {
+  intent: Intent;
+  reason: string;
 };
 
-export type NovaAction =
-  | { type: "reply"; text: string }
-  | { type: "create_command"; node_id: string; command: string; payload: any; needs_approval: boolean };
+const DECIDE_PROMPT = `
+Eres el Router Cognitivo de NOVA AGI.
+Clasifica el mensaje del usuario en UNA de estas intenciones exactas:
+- "general" : Preguntas comunes, saludos, charlas abiertas.
+- "ops" : Comandos de infraestructura, servidores, nodos, terminal, seguridad Vertx.
+- "code" : Creación de software, debugging, arquitectura.
+- "finance" : Dinero, Stripe, MercadoPago, ROI, ganancias (Numia).
+- "social" : Meta Ads, WhatsApp, TikTok, creación de contenido, CRM.
+- "research" : Búsqueda profunda, análisis de mercado, probabilidad (Curvewind/Chido Wins).
 
-export async function decide(input: DecideInput): Promise<NovaAction[]> {
-  const t = input.text.toLowerCase().trim();
-  const sb = supabaseAdmin();
+REGLA ESTRICTA: Responde SOLO con un objeto JSON válido.
+Formato: {"intent": "general|ops|code|finance|social|research", "reason": "Breve explicación en 10 palabras"}
+`.trim();
 
-  // 1) STATUS
-  if (t.includes("status") || t.includes("estado") || t.includes("nodos")) {
-    const nodes = await sb.from("nodes").select("id,name,status,last_seen").eq("project_id", input.project_id);
-    const cmds = await sb.from("commands").select("id,status,created_at").eq("project_id", input.project_id).limit(20);
+export async function decideIntent(message: string, prefer: Prefer): Promise<Decision> {
+  const messages: { role: "system" | "user"; content: string }[] = [
+    { role: "system", content: DECIDE_PROMPT },
+    { role: "user", content: message }
+  ];
 
-    return [{
-      type: "reply",
-      text:
-        `Listo. Nodos: ${nodes.data?.length ?? 0}. ` +
-        `Comandos recientes: ${cmds.data?.length ?? 0}. ` +
-        `Dime: “ejecuta diagnóstico” o “abre cola de comandos”.`
-    }];
-  }
-
-  // 2) DIAGNOSTICO (ejemplo real, seguro)
-  if (t.includes("diagnost") || t.includes("health")) {
-    if (!input.node_id) {
-      return [{ type: "reply", text: "Necesito un node_id (elige un nodo en el panel) para correr diagnóstico." }];
+  let text = "";
+  
+  try {
+    // Usamos el modelo 'fast' para decisiones rápidas y baratas
+    if (prefer === "openai" || (prefer === "auto" && config.openai.apiKey)) {
+      const r = await openaiRespond({
+        apiKey: config.openai.apiKey!,
+        model: modelFor("openai", "fast"),
+        messages,
+        jsonMode: true
+      });
+      text = r.text;
+    } else {
+      const r = await geminiRespond({
+        apiKey: config.gemini.apiKey!,
+        model: modelFor("gemini", "fast"),
+        messages,
+        jsonMode: true
+      });
+      text = r.text;
     }
-    return [
-      { type: "reply", text: "Te propongo un diagnóstico básico. Queda en cola para aprobación." },
-      {
-        type: "create_command",
-        node_id: input.node_id,
-        command: "shell.exec",
-        payload: { cmd: "uname -a && node -v && npm -v && df -h && free -m", timeoutMs: 60000 },
-        needs_approval: true
-      }
-    ];
-  }
 
-  // 3) CREAR “SCAFFOLD” DE JUEGO (plantilla)
-  if (t.includes("slots") || (t.includes("juego") && t.includes("casino"))) {
-    if (!input.node_id) {
-      return [{ type: "reply", text: "Para crear archivos necesito un node_id (un nodo con el repo en su WORKDIR)." }];
+    const obj = parseStableJson(text);
+    
+    if (obj && typeof obj.intent === "string") {
+      const i = obj.intent.toLowerCase();
+      if (["general", "ops", "code", "finance", "social", "research"].includes(i)) {
+        return { intent: i as Intent, reason: obj.reason || "Decisión estándar" };
+      }
     }
-    return [
-      { type: "reply", text: "Ok. Puedo generar un scaffold (carpeta + archivos base). Lo dejo en cola para aprobación." },
-      {
-        type: "create_command",
-        node_id: input.node_id,
-        command: "fs.write",
-        payload: {
-          path: "chido-casino/games/slots/README.md",
-          content:
-`# Slots (Scaffold)
-Esto es una base.
-- engine: lógica del juego
-- ui: pantalla
-Siguiente paso: dime el framework exacto del casino (Pixi/Phaser/React Canvas) y el payout model.`
-        },
-        needs_approval: true
-      }
-    ];
+  } catch (e: any) {
+    console.error("Router Cognitivo Falló:", e.message);
   }
 
-  // 4) DEFAULT
-  return [{
-    type: "reply",
-    text:
-      "Te entendí. Dame un comando más concreto, por ejemplo:\n" +
-      "• “estado de nodos”\n" +
-      "• “ejecuta diagnóstico”\n" +
-      "• “crea scaffold slots en chido-casino”"
-  }];
+  // Fallback seguro a general si el LLM falla o alucina
+  return { intent: "general", reason: "Fallback_parse_error" };
 }
