@@ -1,5 +1,6 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import { Langfuse } from "langfuse-node";
 
 import { config } from "./config.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ErrorResponse, Prefer } from "./types.js";
@@ -13,6 +14,13 @@ import { enqueueActions } from "./lib/actions.js";
 import { recordUsage } from "./lib/usage.js";
 
 const app = Fastify({ logger: true });
+
+// Inicialización de la Conciencia de Observabilidad (Syntia)
+const langfuse = new Langfuse({
+  publicKey: config.langfuse.publicKey,
+  secretKey: config.langfuse.secretKey,
+  baseUrl: config.langfuse.baseUrl,
+});
 
 function nowIso() {
   return new Date().toISOString();
@@ -42,10 +50,15 @@ function normalizePrefer(v: any): Prefer {
   return "auto";
 }
 
-// Health check (Cloud Run / Render)
-app.get("/health", async () => ({ ok: true, service: "nova.agi", ts: nowIso() }));
+app.get("/health", async () => ({ 
+  ok: true, 
+  service: "nova.agi.orchestrator", 
+  fabric_ready: true,
+  ts: nowIso() 
+}));
 
 async function handleChat(req: any, reply: any) {
+  let trace;
   try {
     requireAuth(req.headers?.authorization, config.orchestratorKey);
 
@@ -66,6 +79,14 @@ async function handleChat(req: any, reply: any) {
     const allow_actions_header = req.headers?.["x-allow-actions"] ? String(req.headers["x-allow-actions"]) : null;
     const allow_actions = Boolean(body.allow_actions);
 
+    // 1. Iniciar Telemetría Cuántica (Langfuse Trace)
+    trace = langfuse.trace({
+      name: "NOVA_Decision_Matrix",
+      sessionId: thread_id,
+      userId: user_id || "anonymous",
+      metadata: { project_id, mode, allow_actions }
+    });
+
     // Persistencia (thread + user message)
     await ensureThread({ project_id, thread_id, user_id, title: titleFromMessage(message) });
     await appendMessage(project_id, thread_id, "user", message);
@@ -76,9 +97,11 @@ async function handleChat(req: any, reply: any) {
       .filter((m) => m.role !== "system")
       .map((m) => ({ role: toChatRole(m.role), content: m.content }));
 
-    // Router
+    // Router Cognitivo
     const route = await chooseRoute({ project_id, message, prefer, mode });
     const agi = pickAgi(route.intent, message);
+    
+    trace.update({ tags: [route.intent, agi.id, route.provider] });
 
     const wantJson = allow_actions && config.actions.enabled;
 
@@ -96,12 +119,15 @@ async function handleChat(req: any, reply: any) {
       : systemBase;
 
     const messages: ChatMessage[] = [{ role: "system", content: system }, ...historyMessages];
-
-    // Evita duplicar el último user message del history (porque ya insertamos)
-    // Aun así, añadimos el mensaje actual explícitamente para el modelo.
     messages.push({ role: "user", content: message });
 
-    // Provider
+    // 2. Telemetría de Generación LLM
+    const generation = trace.generation({
+      name: `LLM_Compute_${route.provider}`,
+      model: route.model,
+      input: messages,
+    });
+
     let outText = "";
     let usage: { tokens_in?: number; tokens_out?: number } | undefined;
 
@@ -115,7 +141,13 @@ async function handleChat(req: any, reply: any) {
       usage = r.usage;
     }
 
-    // Parse JSON (si aplica)
+    // Completar telemetría de generación
+    generation.end({
+      output: outText,
+      usage: usage ? { promptTokens: usage.tokens_in, completionTokens: usage.tokens_out } : undefined,
+    });
+
+    // Parse JSON
     let replyText = outText;
     let actionsRaw: any[] = [];
     if (wantJson) {
@@ -127,7 +159,7 @@ async function handleChat(req: any, reply: any) {
       }
     }
 
-    // Enqueue actions (seguro)
+    // Enqueue actions a la Automation Fabric
     const actionResult = await enqueueActions({
       project_id,
       allow_actions,
@@ -135,10 +167,12 @@ async function handleChat(req: any, reply: any) {
       actions: actionsRaw
     });
 
-    // Persist assistant message (role "nova" para que el panel lo pinte como NOVA)
+    if (actionsRaw.length > 0) {
+      trace.event({ name: "Actions_Dispatched", input: { enqueued: actionResult.enqueued, blocked: actionResult.blocked } });
+    }
+
     await appendMessage(project_id, thread_id, "nova", replyText);
 
-    // Usage best-effort
     await recordUsage({
       project_id,
       thread_id,
@@ -158,6 +192,7 @@ async function handleChat(req: any, reply: any) {
       intent: route.intent,
       agi_id: agi.id,
       reply: replyText,
+      trace_id: trace.id, // Exponemos el trace_id al cliente
       actions: actionResult.enqueued,
       meta: {
         router_reason: route.reason,
@@ -166,18 +201,25 @@ async function handleChat(req: any, reply: any) {
       }
     };
 
+    trace.update({ statusMessage: "SUCCESS" });
+    await langfuse.flushAsync();
+
     return reply.code(200).send(res);
   } catch (e: any) {
+    if (trace) {
+      trace.update({ level: "ERROR", statusMessage: e.message });
+      await langfuse.flushAsync();
+    }
+    
     const status = e instanceof HttpError ? e.status : 500;
     const payload: ErrorResponse =
-      e instanceof HttpError ? e.payload : { ok: false, error: String(e?.message || e || "server_error") };
+      e instanceof HttpError ? { ...e.payload, trace_id: trace?.id } : { ok: false, error: String(e?.message || e || "server_error"), trace_id: trace?.id };
 
     req.log.error({ err: e }, "chat_error");
     return reply.code(status).send(payload);
   }
 }
 
-// Compat: /chat y /v1/chat
 app.post("/chat", handleChat);
 app.post("/v1/chat", handleChat);
 
