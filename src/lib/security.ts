@@ -1,24 +1,30 @@
 import crypto from "node:crypto";
 
-function sortKeysDeep(value: any): any {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value && typeof value === "object") {
-    const out: Record<string, any> = {};
-    for (const k of Object.keys(value).sort()) out[k] = sortKeysDeep(value[k]);
-    return out;
+/**
+ * Ordena las llaves de un objeto de forma profunda para garantizar
+ * que el JSON.stringify siempre produzca exactamente el mismo string,
+ * sin importar el orden en que se definieron las propiedades.
+ */
+function sortKeysDeep(obj: any): any {
+  if (Array.isArray(obj)) {
+    return obj.map(sortKeysDeep);
   }
-  return value;
-}
-
-export function canonicalJson(value: any): string {
-  return JSON.stringify(sortKeysDeep(value ?? {}));
+  if (obj !== null && typeof obj === "object") {
+    return Object.keys(obj)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = sortKeysDeep(obj[key]);
+        return acc;
+      }, {} as Record<string, any>);
+  }
+  return obj;
 }
 
 /**
- * Firma v2:
- * id|project_id|node_id|command|created_at|canonical(payload)
+ * Genera la firma criptográfica (Protocolo AEGIS/VERTX) para un comando.
+ * Debe coincidir bit a bit con la validación en Hocker One.
  */
-export function signCommandV2(
+export function signCommand(
   secret: string,
   id: string,
   project_id: string,
@@ -27,6 +33,11 @@ export function signCommandV2(
   payload: any,
   created_at: string
 ): string {
-  const base = [id, project_id, node_id, command, created_at, canonicalJson(payload)].join("|");
-  return crypto.createHmac("sha256", secret).update(base).digest("hex");
+  const sortedPayload = sortKeysDeep(payload || {});
+  const payloadStr = JSON.stringify(sortedPayload);
+  
+  // Matriz de integridad estricta
+  const data = `${id}|${project_id}|${node_id}|${command}|${payloadStr}|${created_at}`;
+  
+  return crypto.createHmac("sha256", secret).update(data).digest("hex");
 }
