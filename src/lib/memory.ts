@@ -1,61 +1,70 @@
-import { supabase } from "./supabase.js";
+import { sb } from "./supabase.js";
+import type { ChatRole } from "../types.js";
 
-export type DbRole = "system" | "user" | "assistant" | "nova";
+export function toChatRole(r: string): ChatRole {
+  if (r === "system" || r === "user" || r === "assistant" || r === "nova") {
+    return r as ChatRole;
+  }
+  return "user"; // fallback seguro
+}
 
-export type NovaDbMessage = {
-  id: string;
+export async function ensureThread(opts: {
   project_id: string;
   thread_id: string;
-  role: DbRole;
-  content: string;
-  created_at: string;
-};
+  user_id?: string | null;
+  title?: string;
+}) {
+  const { data: existing } = await sb
+    .from("threads")
+    .select("id")
+    .eq("project_id", opts.project_id)
+    .eq("id", opts.thread_id)
+    .maybeSingle();
 
-export async function ensureThread(args: { project_id: string; thread_id: string; user_id?: string | null; title?: string | null }) {
-  // Best-effort: si tablas no existen aún, no tronamos.
-  try {
-    await supabase
-      .from("nova_threads")
-      .upsert(
-        {
-          id: args.thread_id,
-          project_id: args.project_id,
-          user_id: args.user_id ?? null,
-          title: args.title ?? null
-        },
-        { onConflict: "id" }
-      );
-  } catch {
-    // ignore
+  if (!existing) {
+    await sb.from("threads").insert({
+      id: opts.thread_id,
+      project_id: opts.project_id,
+      user_id: opts.user_id || null,
+      title: opts.title || "Nueva conversación"
+    });
   }
 }
 
-export async function appendMessage(project_id: string, thread_id: string, role: DbRole, content: string) {
-  try {
-    await supabase.from("nova_messages").insert({ project_id, thread_id, role, content });
-  } catch {
-    // ignore
-  }
+export async function loadThread(project_id: string, thread_id: string, limit = 40) {
+  const { data, error } = await sb
+    .from("messages")
+    .select("id, role, content, created_at")
+    .eq("project_id", project_id)
+    .eq("thread_id", thread_id)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error || !data) return [];
+  
+  // Retornamos en orden cronológico correcto (más antiguo primero)
+  return data.reverse();
 }
 
-export async function loadThread(project_id: string, thread_id: string, limit = 30): Promise<NovaDbMessage[]> {
-  try {
-    const { data, error } = await supabase
-      .from("nova_messages")
-      .select("id, project_id, thread_id, role, content, created_at")
-      .eq("project_id", project_id)
-      .eq("thread_id", thread_id)
-      .order("created_at", { ascending: true })
-      .limit(limit);
+export async function appendMessage(
+  project_id: string,
+  thread_id: string,
+  role: ChatRole,
+  content: string
+) {
+  const { data, error } = await sb
+    .from("messages")
+    .insert({
+      project_id,
+      thread_id,
+      role,
+      content
+    })
+    .select("id")
+    .single();
 
-    if (error || !data) return [];
-    return data as any;
-  } catch {
-    return [];
+  if (error) {
+    console.error("Fallo de memoria (Syntia Error):", error.message);
   }
-}
-
-export function toChatRole(role: DbRole): "system" | "user" | "assistant" {
-  if (role === "nova") return "assistant";
-  return role;
+  return data?.id;
 }
