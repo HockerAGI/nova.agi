@@ -8,5 +8,6 @@ export function defaultProjectId(): string {
 }
 
 export function defaultNodeId(): string {
-  return (process.env.DEFAULT_NODE_ID ?? "node-hocker-01").trim();
+  // CORRECCIÓN: Respetamos el nodo físico como predeterminado (hocker-node-1)
+  return (process.env.DEFAULT_NODE_ID ?? "hocker-node-1").trim();
 }
