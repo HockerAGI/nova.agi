@@ -1,38 +1,29 @@
-export function stableStringify(value: any): string {
-  if (value === null || value === undefined) return "null";
-  const t = typeof value;
-
-  if (t === "number" || t === "boolean") return String(value);
-  if (t === "string") return JSON.stringify(value);
-
-  if (Array.isArray(value)) {
-    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+/**
+ * Intenta extraer y parsear un JSON válido incluso si el LLM
+ * lo envuelve en bloques de código markdown.
+ */
+export function parseStableJson(text: string): any {
+  if (!text) return null;
+  
+  let clean = text.trim();
+  
+  // Quitar bloques de markdown si la IA los incluyó
+  if (clean.startsWith("```json")) {
+    clean = clean.replace(/^```json/, "");
+  } else if (clean.startsWith("```")) {
+    clean = clean.replace(/^```/, "");
   }
-
-  if (t === "object") {
-    const keys = Object.keys(value).sort();
-    const items = keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`);
-    return `{${items.join(",")}}`;
+  
+  if (clean.endsWith("```")) {
+    clean = clean.replace(/```$/, "");
   }
-
-  return "null";
-}
-
-export function extractJsonLoose(txt: string): string | null {
-  const fenced = txt.match(/```json\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) return fenced[1].trim();
-
-  const start = txt.indexOf("{");
-  const end = txt.lastIndexOf("}");
-  if (start >= 0 && end > start) return txt.slice(start, end + 1).trim();
-
-  return null;
-}
-
-export function safeJsonParse<T = any>(txt: string): { ok: true; value: T } | { ok: false; error: string } {
+  
+  clean = clean.trim();
+  
   try {
-    return { ok: true, value: JSON.parse(txt) };
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? "JSON parse error" };
+    return JSON.parse(clean);
+  } catch (e) {
+    console.error("Fallo al parsear JSON estable:", e);
+    return null;
   }
 }
