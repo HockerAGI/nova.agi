@@ -10,37 +10,42 @@ const langfuse = new Langfuse({
 
 export type SynapseEvent = {
   project_id: string;
-  type: string;          
-  source?: string;       
+  type: string;
   node_id?: string | null;
   severity?: "debug" | "info" | "warn" | "error" | "critical";
   message: string;
   meta?: Record<string, any>;
 };
 
+function toLevel(sev?: string): "info" | "warn" | "error" {
+  const s = String(sev || "info").toLowerCase();
+  if (s === "warn" || s === "warning") return "warn";
+  if (s === "error" || s === "critical") return "error";
+  return "info";
+}
+
 export async function logEvent(e: SynapseEvent) {
   const sb = sbAdmin();
-
-  // Determinación dinámica: Si no especificas, asume tu nodo físico local.
-  const targetNode = e.node_id ?? process.env.DEFAULT_NODE_ID ?? "hocker-node-1";
+  const level = toLevel(e.severity);
+  const data = e.meta && typeof e.meta === "object" ? e.meta : {};
 
   const { error } = await sb.from("events").insert({
     project_id: e.project_id,
+    node_id: e.node_id ?? null,
+    level,
     type: e.type,
     message: e.message,
-    level: e.severity === "warn" ? "warning" : e.severity === "error" || e.severity === "critical" ? "error" : "info",
-    meta: { source: e.source ?? "api", node_id: targetNode, ...e.meta }
+    data,
   });
 
   const trace = langfuse.trace({ name: `Synapse_${e.type}`, metadata: { project_id: e.project_id } });
-  
   trace.event({
     name: e.message,
-    level: e.severity === "error" || e.severity === "critical" ? "ERROR" : e.severity === "warn" ? "WARNING" : "DEFAULT",
-    input: e.meta
+    level: level === "error" ? "ERROR" : level === "warn" ? "WARNING" : "DEFAULT",
+    input: data,
   });
-  
+
   await langfuse.flushAsync();
 
-  if (error) throw error;
+  if (error) throw new Error(error.message);
 }
