@@ -35,27 +35,25 @@ export async function tokensUsedThisMonth(project_id: string, provider: Provider
 
 export async function recordUsage(args: {
   project_id: string;
-  thread_id: string;
+  thread_id?: string;
   provider: Provider;
   model: string;
   tokens_in?: number;
   tokens_out?: number;
   meta?: any;
-  trace_id?: string; // ACTUALIZACIÓN: Link a Langfuse (Módulo E)
+  trace_id?: string;
 }) {
   try {
     const sb = sbAdmin();
-    // Combinamos la metadata original con el trace_id para trazabilidad
     const metaData = { ...args.meta, trace_id: args.trace_id };
 
     await sb.from("llm_usage").insert({
       project_id: args.project_id,
-      thread_id: args.thread_id,
       provider: args.provider,
       model: args.model,
       tokens_in: args.tokens_in ?? null,
       tokens_out: args.tokens_out ?? null,
-      meta: metaData
+      meta: metaData,
     });
   } catch {
     // ignore
