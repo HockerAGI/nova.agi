@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "node:crypto";
 import Fastify from "fastify";
 import { Langfuse } from "langfuse-node";
 
@@ -15,7 +16,6 @@ import { recordUsage } from "./lib/usage.js";
 
 const app = Fastify({ logger: true });
 
-// Inicialización de la Conciencia de Observabilidad (Syntia)
 const langfuse = new Langfuse({
   publicKey: config.langfuse.publicKey,
   secretKey: config.langfuse.secretKey,
@@ -50,15 +50,15 @@ function normalizePrefer(v: any): Prefer {
   return "auto";
 }
 
-app.get("/health", async () => ({ 
-  ok: true, 
-  service: "nova.agi.orchestrator", 
+app.get("/health", async () => ({
+  ok: true,
+  service: "nova.agi.orchestrator",
   fabric_ready: true,
-  ts: nowIso() 
+  ts: nowIso(),
 }));
 
 async function handleChat(req: any, reply: any) {
-  let trace;
+  let trace: any;
   try {
     requireAuth(req.headers?.authorization, config.orchestratorKey);
 
@@ -77,30 +77,28 @@ async function handleChat(req: any, reply: any) {
     const mode = body.mode ?? "auto";
 
     const allow_actions_header = req.headers?.["x-allow-actions"] ? String(req.headers["x-allow-actions"]) : null;
-    const allow_actions = Boolean(body.allow_actions);
+    const allow_actions = config.actions.requireHeader
+      ? Boolean(body.allow_actions) && allow_actions_header === "1"
+      : Boolean(body.allow_actions);
 
-    // 1. Iniciar Telemetría Cuántica (Langfuse Trace)
     trace = langfuse.trace({
       name: "NOVA_Decision_Matrix",
       sessionId: thread_id,
       userId: user_id || "anonymous",
-      metadata: { project_id, mode, allow_actions }
+      metadata: { project_id, mode, allow_actions },
     });
 
-    // Persistencia (thread + user message)
-    await ensureThread({ project_id, thread_id, user_id, title: titleFromMessage(message) });
+    await ensureThread({ project_id, thread_id });
     await appendMessage(project_id, thread_id, "user", message);
 
-    // Contexto de memoria
     const history = await loadThread(project_id, thread_id, 30);
     const historyMessages: ChatMessage[] = history
-      .filter((m) => m.role !== "system")
-      .map((m) => ({ role: toChatRole(m.role), content: m.content }));
+      .filter((m: any) => m.role !== "system")
+      .map((m: any) => ({ role: toChatRole(m.role), content: m.content }));
 
-    // Router Cognitivo
     const route = await chooseRoute({ project_id, message, prefer, mode });
     const agi = pickAgi(route.intent, message);
-    
+
     trace.update({ tags: [route.intent, agi.id, route.provider] });
 
     const wantJson = allow_actions && config.actions.enabled;
@@ -114,14 +112,13 @@ async function handleChat(req: any, reply: any) {
     const system = wantJson
       ? systemBase +
         "\nIMPORTANTE: Responde SOLO en JSON válido. Debe incluir la palabra JSON en el contenido.\n" +
-        "Formato JSON esperado: {\"reply\": string, \"actions\": [{\"command\": string, \"payload\": any, \"node_id\"?: string}] }\n" +
+        'Formato JSON esperado: {"reply": string, "actions": [{"command": string, "payload": any, "node_id"?: string}] }\n' +
         "Si no hay acciones, actions=[] y reply siempre va."
       : systemBase;
 
     const messages: ChatMessage[] = [{ role: "system", content: system }, ...historyMessages];
     messages.push({ role: "user", content: message });
 
-    // 2. Telemetría de Generación LLM
     const generation = trace.generation({
       name: `LLM_Compute_${route.provider}`,
       model: route.model,
@@ -132,24 +129,33 @@ async function handleChat(req: any, reply: any) {
     let usage: { tokens_in?: number; tokens_out?: number } | undefined;
 
     if (route.provider === "openai") {
-      const r = await openaiRespond({ apiKey: config.openai.apiKey, model: route.model, messages, jsonMode: wantJson });
+      const r = await openaiRespond({
+        apiKey: config.openai.apiKey,
+        model: route.model,
+        messages,
+        jsonMode: wantJson,
+      });
       outText = r.text;
       usage = r.usage;
     } else {
-      const r = await geminiRespond({ apiKey: config.gemini.apiKey, model: route.model, messages, jsonMode: wantJson });
+      const r = await geminiRespond({
+        apiKey: config.gemini.apiKey,
+        model: route.model,
+        messages,
+        jsonMode: wantJson,
+      });
       outText = r.text;
       usage = r.usage;
     }
 
-    // Completar telemetría de generación
     generation.end({
       output: outText,
       usage: usage ? { promptTokens: usage.tokens_in, completionTokens: usage.tokens_out } : undefined,
     });
 
-    // Parse JSON
     let replyText = outText;
     let actionsRaw: any[] = [];
+
     if (wantJson) {
       const obj = safeJsonParse(outText);
       if (obj && typeof obj === "object") {
@@ -159,19 +165,21 @@ async function handleChat(req: any, reply: any) {
       }
     }
 
-    // Enqueue actions a la Automation Fabric
     const actionResult = await enqueueActions({
       project_id,
       allow_actions,
       allow_actions_header,
-      actions: actionsRaw
+      actions: actionsRaw,
     });
 
     if (actionsRaw.length > 0) {
-      trace.event({ name: "Actions_Dispatched", input: { enqueued: actionResult.enqueued, blocked: actionResult.blocked } });
+      trace.event({
+        name: "Actions_Dispatched",
+        input: { enqueued: actionResult.enqueued, blocked: actionResult.blocked },
+      });
     }
 
-    await appendMessage(project_id, thread_id, "nova", replyText);
+    await appendMessage(project_id, thread_id, "assistant", replyText);
 
     await recordUsage({
       project_id,
@@ -180,7 +188,8 @@ async function handleChat(req: any, reply: any) {
       model: route.model,
       tokens_in: usage?.tokens_in,
       tokens_out: usage?.tokens_out,
-      meta: { intent: route.intent, agi_id: agi.id, reason: route.reason }
+      meta: { intent: route.intent, agi_id: agi.id, reason: route.reason },
+      trace_id: trace.id,
     });
 
     const res: ChatResponse = {
@@ -192,13 +201,13 @@ async function handleChat(req: any, reply: any) {
       intent: route.intent,
       agi_id: agi.id,
       reply: replyText,
-      trace_id: trace.id, // Exponemos el trace_id al cliente
+      trace_id: trace.id,
       actions: actionResult.enqueued,
       meta: {
         router_reason: route.reason,
         want_json: wantJson,
-        blocked_actions: actionResult.blocked?.length ? actionResult.blocked : undefined
-      }
+        blocked_actions: actionResult.blocked?.length ? actionResult.blocked : undefined,
+      },
     };
 
     trace.update({ statusMessage: "SUCCESS" });
@@ -210,10 +219,12 @@ async function handleChat(req: any, reply: any) {
       trace.update({ level: "ERROR", statusMessage: e.message });
       await langfuse.flushAsync();
     }
-    
+
     const status = e instanceof HttpError ? e.status : 500;
     const payload: ErrorResponse =
-      e instanceof HttpError ? { ...e.payload, trace_id: trace?.id } : { ok: false, error: String(e?.message || e || "server_error"), trace_id: trace?.id };
+      e instanceof HttpError
+        ? { ...e.payload, trace_id: trace?.id }
+        : { ok: false, error: String(e?.message || e || "server_error"), trace_id: trace?.id };
 
     req.log.error({ err: e }, "chat_error");
     return reply.code(status).send(payload);
