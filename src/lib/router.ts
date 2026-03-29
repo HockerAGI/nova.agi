@@ -13,7 +13,7 @@ type ChooseOpts = {
   project_id: string;
   message: string;
   prefer: Prefer;
-  mode?: string | null;
+  mode: string;
 };
 
 function providerAvailable(provider: "openai" | "gemini") {
@@ -29,16 +29,18 @@ export async function chooseRoute(opts: ChooseOpts): Promise<RouteResult> {
 
   const decision = await decideIntent(message, prefer);
 
-  let provider: "openai" | "gemini" = "openai";
+  let provider: "openai" | "gemini" = providerAvailable("openai") ? "openai" : "gemini";
 
   if (prefer === "gemini") {
-    provider = providerAvailable("gemini") ? "gemini" : "openai";
+    provider = providerAvailable("gemini") ? "gemini" : providerAvailable("openai") ? "openai" : "gemini";
   } else if (prefer === "openai") {
-    provider = providerAvailable("openai") ? "openai" : "gemini";
-  } else if (decision.intent === "code" || decision.intent === "ops") {
-    provider = providerAvailable("openai") ? "openai" : "gemini";
+    provider = providerAvailable("openai") ? "openai" : providerAvailable("gemini") ? "gemini" : "openai";
   } else {
-    provider = providerAvailable("gemini") ? "gemini" : "openai";
+    if (decision.intent === "code" || decision.intent === "ops") {
+      provider = providerAvailable("openai") ? "openai" : providerAvailable("gemini") ? "gemini" : "openai";
+    } else {
+      provider = providerAvailable("gemini") ? "gemini" : providerAvailable("openai") ? "openai" : "gemini";
+    }
   }
 
   const finalModel = modelFor(provider, safeMode);
