@@ -1,8 +1,9 @@
 import { openaiRespond } from "../providers/openai.js";
 import { geminiRespond } from "../providers/gemini.js";
 import { config, modelFor } from "../config.js";
-import type { Prefer, Intent } from "../types.js";
+import type { Prefer, Intent, Provider } from "../types.js";
 import { parseStableJson } from "./stable-json.js";
+import { detectIntent } from "./intents.js";
 
 type Decision = {
   intent: Intent;
@@ -23,46 +24,77 @@ REGLA ESTRICTA: Responde SOLO con un objeto JSON válido.
 Formato: {"intent": "general|ops|code|finance|social|research", "reason": "Breve explicación en 10 palabras"}
 `.trim();
 
+function candidateProviders(prefer: Prefer): Provider[] {
+  const openaiReady = Boolean(config.openai.apiKey);
+  const geminiReady = Boolean(config.gemini.apiKey);
+
+  if (prefer === "openai") {
+    return [
+      ...(openaiReady ? ["openai" as const] : []),
+      ...(geminiReady ? ["gemini" as const] : []),
+    ];
+  }
+
+  if (prefer === "gemini") {
+    return [
+      ...(geminiReady ? ["gemini" as const] : []),
+      ...(openaiReady ? ["openai" as const] : []),
+    ];
+  }
+
+  if (openaiReady) return ["openai", ...(geminiReady ? ["gemini"] : [])];
+  if (geminiReady) return ["gemini", ...(openaiReady ? ["openai"] : [])];
+  return [];
+}
+
 export async function decideIntent(message: string, prefer: Prefer): Promise<Decision> {
   const messages: { role: "system" | "user"; content: string }[] = [
     { role: "system", content: DECIDE_PROMPT },
-    { role: "user", content: message }
+    { role: "user", content: message },
   ];
 
-  let text = "";
-  
-  try {
-    // Usamos el modelo 'fast' para decisiones rápidas y baratas
-    if (prefer === "openai" || (prefer === "auto" && config.openai.apiKey)) {
-      const r = await openaiRespond({
-        apiKey: config.openai.apiKey!,
-        model: modelFor("openai", "fast"),
-        messages,
-        jsonMode: true
-      });
-      text = r.text;
-    } else {
-      const r = await geminiRespond({
-        apiKey: config.gemini.apiKey!,
-        model: modelFor("gemini", "fast"),
-        messages,
-        jsonMode: true
-      });
-      text = r.text;
-    }
+  let lastError: unknown = null;
 
-    const obj = parseStableJson(text);
-    
-    if (obj && typeof obj.intent === "string") {
-      const i = obj.intent.toLowerCase();
-      if (["general", "ops", "code", "finance", "social", "research"].includes(i)) {
-        return { intent: i as Intent, reason: obj.reason || "Decisión estándar" };
+  for (const provider of candidateProviders(prefer)) {
+    const apiKey = provider === "openai" ? config.openai.apiKey : config.gemini.apiKey;
+    if (!apiKey) continue;
+
+    try {
+      const response =
+        provider === "openai"
+          ? await openaiRespond({
+              apiKey,
+              model: modelFor("openai", "fast"),
+              messages,
+              jsonMode: true,
+            })
+          : await geminiRespond({
+              apiKey,
+              model: modelFor("gemini", "fast"),
+              messages,
+              jsonMode: true,
+            });
+
+      const obj = parseStableJson(response.text);
+      if (obj && typeof obj.intent === "string") {
+        const i = obj.intent.toLowerCase();
+        if (["general", "ops", "code", "finance", "social", "research"].includes(i)) {
+          return { intent: i as Intent, reason: obj.reason || "Decisión estándar" };
+        }
       }
+    } catch (error) {
+      lastError = error;
     }
-  } catch (e: any) {
-    console.error("Router Cognitivo Falló:", e.message);
   }
 
-  // Fallback seguro a general si el LLM falla o alucina
+  const heuristic = detectIntent(message);
+  if (heuristic !== "general") {
+    return { intent: heuristic, reason: "Fallback_heuristic" };
+  }
+
+  if (lastError) {
+    console.error("Router Cognitivo Falló:", lastError instanceof Error ? lastError.message : String(lastError));
+  }
+
   return { intent: "general", reason: "Fallback_parse_error" };
 }
