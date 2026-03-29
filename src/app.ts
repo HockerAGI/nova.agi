@@ -1,8 +1,10 @@
+import "dotenv/config";
 import crypto from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { Langfuse } from "langfuse-node";
 
 import { config, modelFor } from "./config.js";
-import type { ChatMessage, ChatRequest, ChatResponse, ErrorResponse, Prefer } from "./types.js";
+import type { ChatMessage, ChatRequest, ChatResponse, ErrorResponse, Prefer, Provider } from "./types.js";
 import { requireAuth, HttpError } from "./lib/http.js";
 import { chooseRoute } from "./lib/router.js";
 import { pickAgi } from "./lib/agis.js";
@@ -10,11 +12,25 @@ import { ensureThread, loadThread, appendMessage, toChatRole } from "./lib/memor
 import { openaiRespond } from "./providers/openai.js";
 import { geminiRespond } from "./providers/gemini.js";
 import { enqueueActions } from "./lib/actions.js";
-import { recordUsage } from "./lib/usage.js";
-import { createLangfuseClient } from "./lib/telemetry.js";
+import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { parseStableJson } from "./lib/stable-json.js";
 
-const telemetry = createLangfuseClient();
+type CompletionMode = "auto" | "fast" | "pro";
+
+function createLangfuseClient() {
+  try {
+    return new Langfuse({
+      publicKey: config.langfuse.publicKey,
+      secretKey: config.langfuse.secretKey,
+      baseUrl: config.langfuse.baseUrl,
+    });
+  } catch (error) {
+    console.warn("Langfuse deshabilitado: no se pudo inicializar el cliente.", error);
+    return null;
+  }
+}
+
+const langfuse = createLangfuseClient();
 
 function nowIso() {
   return new Date().toISOString();
@@ -31,9 +47,9 @@ function normalizePrefer(v: any): Prefer {
   return "auto";
 }
 
-function normalizeMode(v: any): "auto" | "fast" | "pro" {
+function normalizeMode(v: any): CompletionMode {
   const s = String(v ?? "auto").trim().toLowerCase();
-  if (s === "fast" || s === "pro" || s === "auto") return s;
+  if (s === "fast" || s === "pro" || s === "auto") return s as CompletionMode;
   return "auto";
 }
 
@@ -77,48 +93,82 @@ function buildSystemPrompt(args: {
   );
 }
 
-async function generateWithFallback(args: {
-  routeProvider: "openai" | "gemini";
-  mode: "auto" | "fast" | "pro";
+function providerAvailable(provider: Provider) {
+  return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
+}
+
+function providerBudgetLimit(provider: Provider) {
+  return provider === "openai" ? config.budgets.openaiMonthlyTokens : config.budgets.geminiMonthlyTokens;
+}
+
+async function runCompletionWithFallback(args: {
+  project_id: string;
+  preferredProvider: Provider;
+  mode: CompletionMode;
   messages: ChatMessage[];
   jsonMode: boolean;
 }) {
-  const candidateProviders: Array<"openai" | "gemini"> =
-    args.routeProvider === "openai" ? ["openai", "gemini"] : ["gemini", "openai"];
+  const candidates: Provider[] =
+    args.preferredProvider === "openai" ? ["openai", "gemini"] : ["gemini", "openai"];
 
   let lastError: unknown = null;
 
-  for (const provider of candidateProviders) {
+  for (const provider of candidates) {
+    if (!providerAvailable(provider)) continue;
+
+    if (config.budgets.enabled) {
+      const used = await tokensUsedThisMonth(args.project_id, provider);
+      const limit = providerBudgetLimit(provider);
+
+      if (used >= limit) {
+        lastError = new HttpError(429, {
+          ok: false,
+          error: `Límite mensual alcanzado para ${provider}.`,
+        });
+        continue;
+      }
+    }
+
     const apiKey = provider === "openai" ? config.openai.apiKey : config.gemini.apiKey;
     if (!apiKey) continue;
 
     const model = modelFor(provider, args.mode);
 
     try {
-      if (provider === "openai") {
-        const r = await openaiRespond({
-          apiKey,
-          model,
-          messages: args.messages,
-          jsonMode: args.jsonMode,
-        });
-        return { provider, model, ...r };
-      }
+      const result =
+        provider === "openai"
+          ? await openaiRespond({
+              apiKey,
+              model,
+              messages: args.messages,
+              jsonMode: args.jsonMode,
+            })
+          : await geminiRespond({
+              apiKey,
+              model,
+              messages: args.messages,
+              jsonMode: args.jsonMode,
+            });
 
-      const r = await geminiRespond({
-        apiKey,
+      return {
+        provider,
         model,
-        messages: args.messages,
-        jsonMode: args.jsonMode,
-      });
-      return { provider, model, ...r };
+        text: result.text,
+        usage: result.usage,
+        fallbackUsed: provider !== args.preferredProvider,
+      };
     } catch (error) {
       lastError = error;
     }
   }
 
+  if (lastError instanceof HttpError) throw lastError;
   if (lastError instanceof Error) throw lastError;
-  throw new Error("No hay proveedor LLM disponible.");
+
+  throw new HttpError(503, {
+    ok: false,
+    error: "No hay proveedor LLM disponible.",
+  });
 }
 
 export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
@@ -135,6 +185,7 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
     const thread_id = asString(body.thread_id, "") || crypto.randomUUID();
     const user_id = body.user_id ?? null;
     const user_email = body.user_email ?? null;
+
     const prefer = normalizePrefer(body.prefer);
     const mode = normalizeMode(body.mode);
 
@@ -143,7 +194,7 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
       ? Boolean(body.allow_actions) && allow_actions_header === "1"
       : Boolean(body.allow_actions);
 
-    trace = telemetry?.trace({
+    trace = langfuse?.trace({
       name: "NOVA_Decision_Matrix",
       sessionId: thread_id,
       userId: user_id || "anonymous",
@@ -160,9 +211,9 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
 
     const route = await chooseRoute({ project_id, message, prefer, mode });
     const agi = pickAgi(route.intent, message);
-    trace?.update({ tags: [route.intent, agi.id, route.provider] });
 
     const wantJson = allow_actions && config.actions.enabled;
+
     const system = buildSystemPrompt({
       agiPrompt: agi.system_prompt,
       project_id,
@@ -173,17 +224,18 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
 
     const messages: ChatMessage[] = [{ role: "system", content: system }, ...historyMessages, { role: "user", content: message }];
 
-    const completion = await generateWithFallback({
-      routeProvider: route.provider,
-      mode: route.mode,
-      messages,
-      jsonMode: wantJson,
+    const generation = trace?.generation({
+      name: `LLM_Compute_${route.provider}`,
+      model: route.model,
+      input: messages,
     });
 
-    const generation = trace?.generation({
-      name: `LLM_Compute_${completion.provider}`,
-      model: completion.model,
-      input: messages,
+    const completion = await runCompletionWithFallback({
+      project_id,
+      preferredProvider: route.provider,
+      mode,
+      messages,
+      jsonMode: wantJson,
     });
 
     generation?.end({
@@ -195,6 +247,15 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
           }
         : undefined,
     });
+
+    if (completion.fallbackUsed) {
+      trace?.event({
+        name: "Provider_Fallback",
+        input: { requested: route.provider, used: completion.provider },
+      });
+    }
+
+    trace?.update({ tags: [route.intent, agi.id, completion.provider] });
 
     let replyText = completion.text;
     let actionsRaw: any[] = [];
@@ -231,7 +292,15 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
       model: completion.model,
       tokens_in: completion.usage?.tokens_in,
       tokens_out: completion.usage?.tokens_out,
-      meta: { intent: route.intent, agi_id: agi.id, reason: route.reason, title: titleFromMessage(message) },
+      meta: {
+        intent: route.intent,
+        agi_id: agi.id,
+        reason: route.reason,
+        requested_provider: route.provider,
+        used_provider: completion.provider,
+        title: titleFromMessage(message),
+        trace_id: trace?.id,
+      },
       trace_id: trace?.id,
     });
 
@@ -249,20 +318,21 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
       meta: {
         router_reason: route.reason,
         want_json: wantJson,
+        requested_provider: route.provider,
+        used_provider: completion.provider,
+        provider_fallback: completion.fallbackUsed ? completion.provider : undefined,
         blocked_actions: actionResult.blocked?.length ? actionResult.blocked : undefined,
-        route_mode: route.mode,
-        provider_fallback: completion.provider !== route.provider ? completion.provider : undefined,
       },
     };
 
     trace?.update({ statusMessage: "SUCCESS" });
-    await telemetry?.flushAsync();
+    await langfuse?.flushAsync();
 
     return reply.code(200).send(res);
   } catch (e: any) {
     if (trace) {
       trace.update({ level: "ERROR", statusMessage: e.message });
-      await telemetry?.flushAsync();
+      await langfuse?.flushAsync();
     }
 
     const status = e instanceof HttpError ? e.status : 500;
@@ -284,10 +354,20 @@ export function buildNovaApp(opts?: { logger?: boolean }): FastifyInstance {
     service: "nova.agi.orchestrator",
     fabric_ready: true,
     hocker_one_api_url: config.hockerOneApiUrl,
-    command_dispatch_path: "/api/commands/dispatch",
-    provider_priority: {
-      openai: Boolean(config.openai.apiKey),
-      gemini: Boolean(config.gemini.apiKey),
+    provider_ready: providerAvailable("openai") || providerAvailable("gemini"),
+    providers: {
+      openai: providerAvailable("openai"),
+      gemini: providerAvailable("gemini"),
+    },
+    budgets: {
+      enabled: config.budgets.enabled,
+      openai_monthly_tokens: config.budgets.openaiMonthlyTokens,
+      gemini_monthly_tokens: config.budgets.geminiMonthlyTokens,
+    },
+    actions: {
+      enabled: config.actions.enabled,
+      fallback_node_id: config.actions.fallbackNodeId,
+      default_node_id: config.actions.defaultNodeId,
     },
     ts: nowIso(),
   }));
