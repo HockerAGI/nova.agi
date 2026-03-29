@@ -34,6 +34,12 @@ async function getControls(project_id: string): Promise<{ kill_switch: boolean; 
   };
 }
 
+function isCloudTarget(nodeId: string) {
+  const nid = String(nodeId || "").trim().toLowerCase();
+  const fallback = String(config.actions.fallbackNodeId || "hocker-fabric").trim().toLowerCase();
+  return nid === fallback || nid.startsWith("cloud-") || nid.startsWith("trigger-");
+}
+
 export async function enqueueActions(opts: EnqueueOptions) {
   const { project_id, allow_actions, allow_actions_header, actions } = opts;
 
@@ -56,7 +62,7 @@ export async function enqueueActions(opts: EnqueueOptions) {
   for (const act of actions) {
     if (!act || typeof act !== "object" || !act.command) continue;
 
-    const command = String(act.command).trim();
+    const command = String(act.command).trim().toLowerCase();
     const payload = act.payload && typeof act.payload === "object" ? { ...act.payload } : {};
     let target_node_id = String(act.node_id || config.actions.defaultNodeId).trim();
 
@@ -112,24 +118,42 @@ export async function enqueueActions(opts: EnqueueOptions) {
 
     if (error) {
       blocked.push({ ...act, reason: error.message });
-    } else {
-      enqueued.push({ id, node_id: target_node_id, command, status, needs_approval });
+      continue;
+    }
 
-      if (target_node_id === config.actions.fallbackNodeId && !needs_approval) {
-        cloudRequiresWakeUp = true;
-      }
+    enqueued.push({ id, node_id: target_node_id, command, status, needs_approval });
+
+    if (isCloudTarget(target_node_id) && !needs_approval) {
+      cloudRequiresWakeUp = true;
     }
   }
 
   if (cloudRequiresWakeUp && config.hockerOneApiUrl && config.commandHmacSecret) {
-    fetch(`${config.hockerOneApiUrl}/api/commands/dispatch`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.commandHmacSecret}`,
-      },
-      body: JSON.stringify({ project_id }),
-    }).catch((e) => console.error("[FABRIC DISPATCH ERROR]", e.message));
+    try {
+      const dispatchUrl = new URL("/api/commands/dispatch", config.hockerOneApiUrl);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
+      try {
+        const response = await fetch(dispatchUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.commandHmacSecret}`,
+          },
+          body: JSON.stringify({ project_id }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          console.error(`[FABRIC DISPATCH ERROR] ${response.status} ${response.statusText}`);
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (e: any) {
+      console.error("[FABRIC DISPATCH ERROR]", e?.message || e);
+    }
   }
 
   return { enqueued, blocked };
