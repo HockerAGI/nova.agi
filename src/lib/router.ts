@@ -1,6 +1,6 @@
+import { config, modelFor } from "../config.js";
 import { decideIntent } from "./decide.js";
-import { modelFor } from "../config.js";
-import type { Intent, Prefer, Mode } from "../types.js";
+import type { Intent, Prefer } from "../types.js";
 
 export type RouteResult = {
   intent: Intent;
@@ -13,32 +13,32 @@ type ChooseOpts = {
   project_id: string;
   message: string;
   prefer: Prefer;
-  mode: Mode | string;
+  mode?: string | null;
 };
+
+function providerAvailable(provider: "openai" | "gemini") {
+  return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
+}
 
 export async function chooseRoute(opts: ChooseOpts): Promise<RouteResult> {
   const { message, prefer, mode } = opts;
-  const safeMode = (["auto", "fast", "pro"].includes(mode) ? mode : "auto") as "auto" | "fast" | "pro";
+  const safeMode = (["auto", "fast", "pro"].includes(String(mode ?? "auto")) ? String(mode ?? "auto") : "auto") as
+    | "auto"
+    | "fast"
+    | "pro";
 
-  // 1. Determinar el motor cognitivo a usar (Intent)
   const decision = await decideIntent(message, prefer);
 
-  // 2. Resolver el proveedor final
   let provider: "openai" | "gemini" = "openai";
-  
+
   if (prefer === "gemini") {
-    provider = "gemini";
+    provider = providerAvailable("gemini") ? "gemini" : "openai";
   } else if (prefer === "openai") {
-    provider = "openai";
+    provider = providerAvailable("openai") ? "openai" : "gemini";
+  } else if (decision.intent === "code" || decision.intent === "ops") {
+    provider = providerAvailable("openai") ? "openai" : "gemini";
   } else {
-    // Modo Auto: Balanceo de carga.
-    // Tareas de código/ops suelen ir mejor a OpenAI (GPT-4o)
-    // Tareas de research/finance pueden ir a Gemini 2.0 Flash/Pro por la ventana de contexto
-    if (decision.intent === "code" || decision.intent === "ops") {
-      provider = "openai";
-    } else {
-      provider = "gemini";
-    }
+    provider = providerAvailable("gemini") ? "gemini" : "openai";
   }
 
   const finalModel = modelFor(provider, safeMode);
@@ -47,6 +47,6 @@ export async function chooseRoute(opts: ChooseOpts): Promise<RouteResult> {
     intent: decision.intent,
     provider,
     model: finalModel,
-    reason: decision.reason
+    reason: decision.reason,
   };
 }
