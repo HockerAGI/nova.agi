@@ -1,7 +1,7 @@
+import { config, modelFor } from "../config.js";
 import { openaiRespond } from "../providers/openai.js";
 import { geminiRespond } from "../providers/gemini.js";
-import { config, modelFor } from "../config.js";
-import type { Prefer, Intent, Provider } from "../types.js";
+import type { Intent, Prefer } from "../types.js";
 import { parseStableJson } from "./stable-json.js";
 import { detectIntent } from "./intents.js";
 
@@ -24,9 +24,13 @@ REGLA ESTRICTA: Responde SOLO con un objeto JSON válido.
 Formato: {"intent": "general|ops|code|finance|social|research", "reason": "Breve explicación en 10 palabras"}
 `.trim();
 
-function candidateProviders(prefer: Prefer): Provider[] {
-  const openaiReady = Boolean(config.openai.apiKey);
-  const geminiReady = Boolean(config.gemini.apiKey);
+function providerAvailable(provider: "openai" | "gemini"): boolean {
+  return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
+}
+
+function candidateProviders(prefer: Prefer): Array<"openai" | "gemini"> {
+  const openaiReady = providerAvailable("openai");
+  const geminiReady = providerAvailable("gemini");
 
   if (prefer === "openai") {
     return [
@@ -44,6 +48,7 @@ function candidateProviders(prefer: Prefer): Provider[] {
 
   if (openaiReady) return ["openai", ...(geminiReady ? ["gemini"] : [])];
   if (geminiReady) return ["gemini", ...(openaiReady ? ["openai"] : [])];
+
   return [];
 }
 
