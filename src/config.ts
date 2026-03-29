@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+function readString(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 const Bool = z
   .string()
   .optional()
@@ -29,14 +37,14 @@ const Schema = z.object({
 
   openai: z.object({
     apiKey: z.string().min(1).optional(),
-    modelBase: z.string().min(1).default("gpt-4o"),
+    modelBase: z.string().min(1),
     modelFast: z.string().min(1).optional(),
     modelPro: z.string().min(1).optional(),
   }),
 
   gemini: z.object({
     apiKey: z.string().min(1).optional(),
-    modelBase: z.string().min(1).default("gemini-2.0-flash"),
+    modelBase: z.string().min(1),
     modelFast: z.string().min(1).optional(),
     modelPro: z.string().min(1).optional(),
   }),
@@ -69,35 +77,35 @@ const Schema = z.object({
 export type Config = z.infer<typeof Schema>;
 
 export const config: Config = Schema.parse({
-  port: process.env.PORT ?? 8080,
-  orchestratorKey: process.env.NOVA_ORCHESTRATOR_KEY ?? process.env.ORCHESTRATOR_KEY ?? process.env.HOCKER_ORCHESTRATOR_KEY,
+  port: readString("PORT") ?? 8080,
+  orchestratorKey: readString("NOVA_ORCHESTRATOR_KEY", "ORCHESTRATOR_KEY", "HOCKER_ORCHESTRATOR_KEY"),
 
   supabase: {
-    url: process.env.SUPABASE_URL,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    url: readString("SUPABASE_URL"),
+    serviceRoleKey: readString("SUPABASE_SERVICE_ROLE_KEY"),
   },
 
-  commandHmacSecret: process.env.COMMAND_HMAC_SECRET,
-  hockerOneApiUrl: process.env.HOCKER_ONE_URL ?? process.env.HOCKER_ONE_API_URL ?? "https://hocker.one",
+  commandHmacSecret: readString("COMMAND_HMAC_SECRET"),
+  hockerOneApiUrl: readString("HOCKER_ONE_URL", "HOCKER_ONE_API_URL") ?? "https://hocker.one",
 
   langfuse: {
-    publicKey: process.env.LANGFUSE_PUBLIC_KEY ?? "dummy_pk",
-    secretKey: process.env.LANGFUSE_SECRET_KEY ?? "dummy_sk",
-    baseUrl: process.env.LANGFUSE_BASE_URL ?? "https://cloud.langfuse.com",
+    publicKey: readString("LANGFUSE_PUBLIC_KEY") ?? "dummy_pk",
+    secretKey: readString("LANGFUSE_SECRET_KEY") ?? "dummy_sk",
+    baseUrl: readString("LANGFUSE_BASE_URL") ?? "https://cloud.langfuse.com",
   },
 
   openai: {
-    apiKey: process.env.OPENAI_API_KEY,
-    modelBase: process.env.OPENAI_MODEL ?? "gpt-4o",
-    modelFast: process.env.OPENAI_MODEL_FAST,
-    modelPro: process.env.OPENAI_MODEL_PRO,
+    apiKey: readString("OPENAI_API_KEY"),
+    modelBase: readString("OPENAI_MODEL") ?? "gpt-4o",
+    modelFast: readString("OPENAI_MODEL_FAST"),
+    modelPro: readString("OPENAI_MODEL_PRO"),
   },
 
   gemini: {
-    apiKey: process.env.GEMINI_API_KEY,
-    modelBase: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
-    modelFast: process.env.GEMINI_MODEL_FAST,
-    modelPro: process.env.GEMINI_MODEL_PRO,
+    apiKey: readString("GEMINI_API_KEY"),
+    modelBase: readString("GEMINI_MODEL") ?? "gemini-2.0-flash",
+    modelFast: readString("GEMINI_MODEL_FAST"),
+    modelPro: readString("GEMINI_MODEL_PRO"),
   },
 
   budgets: {
@@ -109,8 +117,8 @@ export const config: Config = Schema.parse({
   actions: {
     enabled: Bool.parse(process.env.ACTIONS_ENABLED),
     defaultNeedsApproval: Bool.parse(process.env.ACTIONS_NEED_APPROVAL),
-    defaultNodeId: process.env.DEFAULT_NODE_ID ?? "hocker-node-1",
-    fallbackNodeId: process.env.FALLBACK_NODE_ID ?? "hocker-fabric",
+    defaultNodeId: readString("DEFAULT_NODE_ID") ?? "hocker-node-1",
+    fallbackNodeId: readString("FALLBACK_NODE_ID") ?? "hocker-fabric",
     requireHeader: Bool.parse(process.env.ACTIONS_REQUIRE_HEADER),
   },
 });
