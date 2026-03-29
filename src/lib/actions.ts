@@ -130,26 +130,18 @@ export async function enqueueActions(opts: EnqueueOptions) {
 
   if (cloudRequiresWakeUp && config.hockerOneApiUrl && config.commandHmacSecret) {
     try {
-      const dispatchUrl = new URL("/api/commands/dispatch", config.hockerOneApiUrl);
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
+      const base = config.hockerOneApiUrl.replace(/\/+$/, "");
+      const response = await fetch(`${base}/api/commands/dispatch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.commandHmacSecret}`,
+        },
+        body: JSON.stringify({ project_id }),
+      });
 
-      try {
-        const response = await fetch(dispatchUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.commandHmacSecret}`,
-          },
-          body: JSON.stringify({ project_id }),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          console.error(`[FABRIC DISPATCH ERROR] ${response.status} ${response.statusText}`);
-        }
-      } finally {
-        clearTimeout(timeout);
+      if (!response.ok) {
+        console.error(`[FABRIC DISPATCH ERROR] ${response.status} ${response.statusText}`);
       }
     } catch (e: any) {
       console.error("[FABRIC DISPATCH ERROR]", e?.message || e);
