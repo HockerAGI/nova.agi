@@ -1,7 +1,8 @@
-import Fastify from "fastify";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import Fastify from "fastify";
+
 import { config } from "../config.js";
-import { handleChat } from "../index.js";
+import { handleChat } from "../app.js";
 
 const app = Fastify({ logger: false });
 
