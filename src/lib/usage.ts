@@ -1,14 +1,21 @@
-import type { Provider } from "../types.js";
+import type { JsonObject, Provider } from "../types.js";
 import { sbAdmin } from "./supabase.js";
 
-function monthStartISO() {
+function monthStartISO(): string {
   const d = new Date();
   d.setUTCDate(1);
   d.setUTCHours(0, 0, 0, 0);
   return d.toISOString();
 }
 
-export async function tokensUsedThisMonth(project_id: string, provider: Provider): Promise<number> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export async function tokensUsedThisMonth(
+  project_id: string,
+  provider: Provider,
+): Promise<number> {
   try {
     const sb = sbAdmin();
     const since = monthStartISO();
@@ -24,8 +31,8 @@ export async function tokensUsedThisMonth(project_id: string, provider: Provider
     if (error || !data) return 0;
 
     let sum = 0;
-    for (const row of data as any[]) {
-      sum += Number(row?.tokens_in ?? 0) + Number(row?.tokens_out ?? 0);
+    for (const row of data as Array<Record<string, unknown>>) {
+      sum += Number(row.tokens_in ?? 0) + Number(row.tokens_out ?? 0);
     }
     return sum;
   } catch {
@@ -40,15 +47,20 @@ export async function recordUsage(args: {
   model: string;
   tokens_in?: number;
   tokens_out?: number;
-  meta?: any;
+  meta?: JsonObject;
   trace_id?: string;
-}) {
+}): Promise<void> {
   try {
     const sb = sbAdmin();
-    const metaData = { ...args.meta, trace_id: args.trace_id };
+
+    const metaData: JsonObject = {
+      ...(isRecord(args.meta) ? args.meta : {}),
+      trace_id: args.trace_id ?? null,
+    };
 
     await sb.from("llm_usage").insert({
       project_id: args.project_id,
+      thread_id: args.thread_id ?? null,
       provider: args.provider,
       model: args.model,
       tokens_in: args.tokens_in ?? null,
@@ -56,6 +68,6 @@ export async function recordUsage(args: {
       meta: metaData,
     });
   } catch {
-    // ignore
+    // no-op
   }
 }
