@@ -1,3 +1,8 @@
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonArray = JsonValue[];
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+
 export type Provider = "openai" | "gemini";
 export type Mode = "auto" | "fast" | "pro";
 export type Intent = "general" | "code" | "ops" | "research" | "finance" | "social";
@@ -13,7 +18,7 @@ export type ChatMessage = {
 export type Action = {
   node_id?: string;
   command: string;
-  payload?: any;
+  payload?: JsonObject;
 };
 
 export type ChatRequest = {
@@ -37,24 +42,26 @@ export type ChatResponse = {
   intent: Intent;
   agi_id: string;
   reply: string;
-  trace_id?: string;
-  actions?: any[];
-  meta?: any;
+  trace_id?: string | null;
+  actions?: Action[];
+  meta?: JsonObject;
 };
 
 export type ErrorResponse = {
   ok: false;
   error: string;
-  trace_id?: string;
-  detail?: any;
+  trace_id?: string | null;
+  details?: string;
 };
 
-export type AgiDef = {
+export type AGI = {
   id: string;
   name: string;
-  kind: string;
-  level: number;
-  parent_id: string | null;
+  description: string;
+  version?: string;
   tags: string[];
+  level?: string;
+  parent_id?: string | null;
+  kind?: string;
   system_prompt: string;
 };
