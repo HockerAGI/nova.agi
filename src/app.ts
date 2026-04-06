@@ -4,27 +4,64 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { Langfuse } from "langfuse-node";
 
 import { config, modelFor } from "./config.js";
-import type { ChatMessage, ChatRequest, ChatResponse, ErrorResponse, Prefer, Provider } from "./types.js";
+import type {
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ErrorResponse,
+  Prefer,
+  Provider,
+} from "./types.js";
 import { requireAuth, HttpError } from "./lib/http.js";
 import { chooseRoute } from "./lib/router.js";
 import { pickAgi } from "./lib/agis.js";
 import { ensureThread, loadThread, appendMessage, toChatRole } from "./lib/memory.js";
-import { openaiRespond } from "./providers/openai.js";
-import { geminiRespond } from "./providers/gemini.js";
+import { openaiRespond, type OpenAiResult } from "./providers/openai.js";
+import { geminiRespond, type GeminiResult } from "./providers/gemini.js";
 import { enqueueActions } from "./lib/actions.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { parseStableJson } from "./lib/stable-json.js";
 
 type CompletionMode = "auto" | "fast" | "pro";
 
-function createLangfuseClient() {
+type ChatHeaders = {
+  authorization?: string;
+  "x-allow-actions"?: string;
+};
+
+type CompletionGeneration = {
+  end: (args: {
+    output: string;
+    usage?: {
+      promptTokens?: number;
+      completionTokens?: number;
+    };
+  }) => void;
+};
+
+type LangfuseTraceLike = {
+  id?: string;
+  event: (args: Record<string, unknown>) => void;
+  update: (args: Record<string, unknown>) => void;
+  generation: (args: Record<string, unknown>) => CompletionGeneration;
+};
+
+type CompletionResult = {
+  provider: Provider;
+  model: string;
+  text: string;
+  usage?: { tokens_in?: number; tokens_out?: number };
+  fallbackUsed: boolean;
+};
+
+function createLangfuseClient(): Langfuse | null {
   try {
     return new Langfuse({
       publicKey: config.langfuse.publicKey,
       secretKey: config.langfuse.secretKey,
       baseUrl: config.langfuse.baseUrl,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.warn("Langfuse deshabilitado: no se pudo inicializar el cliente.", error);
     return null;
   }
@@ -32,37 +69,39 @@ function createLangfuseClient() {
 
 const langfuse = createLangfuseClient();
 
-function nowIso() {
+function nowIso(): string {
   return new Date().toISOString();
 }
 
-function asString(v: any, def = "") {
-  const s = typeof v === "string" ? v : "";
-  return (s || def).trim();
+function asString(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
 }
 
-function normalizePrefer(v: any): Prefer {
-  const s = String(v ?? "auto").trim().toLowerCase();
-  if (s === "openai" || s === "gemini" || s === "auto") return s as Prefer;
+function normalizePrefer(value: unknown): Prefer {
+  const s = String(value ?? "auto").trim().toLowerCase();
+  if (s === "openai" || s === "gemini" || s === "auto") return s;
   return "auto";
 }
 
-function normalizeMode(v: any): CompletionMode {
-  const s = String(v ?? "auto").trim().toLowerCase();
-  if (s === "fast" || s === "pro" || s === "auto") return s as CompletionMode;
+function normalizeMode(value: unknown): CompletionMode {
+  const s = String(value ?? "auto").trim().toLowerCase();
+  if (s === "fast" || s === "pro" || s === "auto") return s;
   return "auto";
 }
 
-function titleFromMessage(message: string) {
+function titleFromMessage(message: string): string {
   const clean = message.replace(/\s+/g, " ").trim();
-  return clean.length <= 60 ? clean : clean.slice(0, 57) + "...";
+  return clean.length <= 60 ? clean : `${clean.slice(0, 57)}...`;
 }
 
-function safeJsonParse(text: string): any | null {
+function safeJsonParse(text: string): unknown | null {
   const stable = parseStableJson(text);
   if (stable) return stable;
+
   try {
-    return JSON.parse(text);
+    return JSON.parse(text) as unknown;
   } catch {
     return null;
   }
@@ -74,7 +113,7 @@ function buildSystemPrompt(args: {
   thread_id: string;
   user_email?: string | null;
   wantJson: boolean;
-}) {
+}): string {
   const { agiPrompt, project_id, thread_id, user_email, wantJson } = args;
 
   const base =
@@ -88,17 +127,19 @@ function buildSystemPrompt(args: {
   return (
     base +
     "\nIMPORTANTE: Responde SOLO en JSON válido. Debe incluir la palabra JSON en el contenido.\n" +
-    'Formato JSON esperado: {"reply": string, "actions": [{"command": string, "payload": any, "node_id"?: string}] }\n' +
+    'Formato JSON esperado: {"reply": string, "actions": [{"command": string, "payload": object, "node_id"?: string}] }\n' +
     "Si no hay acciones, actions=[] y reply siempre va."
   );
 }
 
-function providerAvailable(provider: Provider) {
+function providerAvailable(provider: Provider): boolean {
   return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
 }
 
-function providerBudgetLimit(provider: Provider) {
-  return provider === "openai" ? config.budgets.openaiMonthlyTokens : config.budgets.geminiMonthlyTokens;
+function providerBudgetLimit(provider: Provider): number {
+  return provider === "openai"
+    ? config.budgets.openaiMonthlyTokens
+    : config.budgets.geminiMonthlyTokens;
 }
 
 async function runCompletionWithFallback(args: {
@@ -107,7 +148,7 @@ async function runCompletionWithFallback(args: {
   mode: CompletionMode;
   messages: ChatMessage[];
   jsonMode: boolean;
-}) {
+}): Promise<CompletionResult> {
   const candidates: Provider[] =
     args.preferredProvider === "openai" ? ["openai", "gemini"] : ["gemini", "openai"];
 
@@ -135,7 +176,7 @@ async function runCompletionWithFallback(args: {
     const model = modelFor(provider, args.mode);
 
     try {
-      const result =
+      const result: OpenAiResult | GeminiResult =
         provider === "openai"
           ? await openaiRespond({
               apiKey,
@@ -157,7 +198,7 @@ async function runCompletionWithFallback(args: {
         usage: result.usage,
         fallbackUsed: provider !== args.preferredProvider,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       lastError = error;
     }
   }
@@ -171,13 +212,16 @@ async function runCompletionWithFallback(args: {
   });
 }
 
-export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
-  let trace: any = null;
+export async function handleChat(
+  req: FastifyRequest<{ Body: ChatRequest; Headers: ChatHeaders }>,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  let trace: LangfuseTraceLike | null = null;
 
   try {
-    requireAuth(req.headers?.authorization as string | undefined, config.orchestratorKey);
+    requireAuth(req.headers.authorization, config.orchestratorKey);
 
-    const body = (req.body ?? {}) as ChatRequest;
+    const body = req.body ?? {};
     const project_id = asString(body.project_id, "global") || "global";
     const message = asString(body.message || body.text, "");
     if (!message) throw new HttpError(400, { ok: false, error: "message requerido" });
@@ -189,29 +233,37 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
     const prefer = normalizePrefer(body.prefer);
     const mode = normalizeMode(body.mode);
 
-    const allow_actions_header = req.headers?.["x-allow-actions"] ? String(req.headers["x-allow-actions"]) : null;
+    const allowActionsHeader = req.headers["x-allow-actions"]
+      ? String(req.headers["x-allow-actions"])
+      : null;
+
     const allow_actions = config.actions.requireHeader
-      ? Boolean(body.allow_actions) && allow_actions_header === "1"
+      ? Boolean(body.allow_actions) && allowActionsHeader === "1"
       : Boolean(body.allow_actions);
 
-    trace = langfuse?.trace({
-      name: "NOVA_Decision_Matrix",
-      sessionId: thread_id,
-      userId: user_id || "anonymous",
-      metadata: { project_id, mode, allow_actions },
-    });
+    trace = langfuse
+      ? (langfuse.trace({
+          name: "NOVA_Decision_Matrix",
+          sessionId: thread_id,
+          userId: user_id || "anonymous",
+          metadata: { project_id, mode, allow_actions },
+        }) as unknown as LangfuseTraceLike)
+      : null;
 
     await ensureThread({ project_id, thread_id });
     await appendMessage(project_id, thread_id, "user", message);
 
-    const history = await loadThread(project_id, thread_id, 30);
+    const history = (await loadThread(project_id, thread_id, 30)) as Array<{
+      role: string;
+      content: string;
+    }>;
+
     const historyMessages: ChatMessage[] = history
-      .filter((m: any) => m.role !== "system")
-      .map((m: any) => ({ role: toChatRole(m.role), content: m.content }));
+      .filter((m) => m.role !== "system")
+      .map((m) => ({ role: toChatRole(m.role), content: m.content }));
 
     const route = await chooseRoute({ project_id, message, prefer, mode });
     const agi = pickAgi(route.intent, message);
-
     const wantJson = allow_actions && config.actions.enabled;
 
     const system = buildSystemPrompt({
@@ -222,7 +274,11 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
       wantJson,
     });
 
-    const messages: ChatMessage[] = [{ role: "system", content: system }, ...historyMessages, { role: "user", content: message }];
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      ...historyMessages,
+      { role: "user", content: message },
+    ];
 
     const generation = trace?.generation({
       name: `LLM_Compute_${route.provider}`,
@@ -258,21 +314,22 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
     trace?.update({ tags: [route.intent, agi.id, completion.provider] });
 
     let replyText = completion.text;
-    let actionsRaw: any[] = [];
+    let actionsRaw: unknown[] = [];
 
     if (wantJson) {
       const obj = safeJsonParse(completion.text);
-      if (obj && typeof obj === "object") {
-        if (typeof obj.reply === "string") replyText = obj.reply;
-        else if (typeof obj.text === "string") replyText = obj.text;
-        actionsRaw = Array.isArray(obj.actions) ? obj.actions : [];
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+        const record = obj as Record<string, unknown>;
+        if (typeof record.reply === "string") replyText = record.reply;
+        else if (typeof record.text === "string") replyText = record.text;
+        actionsRaw = Array.isArray(record.actions) ? record.actions : [];
       }
     }
 
     const actionResult = await enqueueActions({
       project_id,
       allow_actions,
-      allow_actions_header,
+      allow_actions_header: allowActionsHeader,
       actions: actionsRaw,
     });
 
@@ -299,7 +356,7 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
         requested_provider: route.provider,
         used_provider: completion.provider,
         title: titleFromMessage(message),
-        trace_id: trace?.id,
+        trace_id: trace?.id ?? null,
       },
       trace_id: trace?.id,
     });
@@ -313,7 +370,7 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
       intent: route.intent,
       agi_id: agi.id,
       reply: replyText,
-      trace_id: trace?.id,
+      trace_id: trace?.id ?? null,
       actions: actionResult.enqueued,
       meta: {
         router_reason: route.reason,
@@ -329,19 +386,26 @@ export async function handleChat(req: FastifyRequest, reply: FastifyReply) {
     await langfuse?.flushAsync();
 
     return reply.code(200).send(res);
-  } catch (e: any) {
+  } catch (error: unknown) {
     if (trace) {
-      trace.update({ level: "ERROR", statusMessage: e.message });
+      trace.update({
+        level: "ERROR",
+        statusMessage: error instanceof Error ? error.message : "chat_error",
+      });
       await langfuse?.flushAsync();
     }
 
-    const status = e instanceof HttpError ? e.status : 500;
+    const status = error instanceof HttpError ? error.status : 500;
     const payload: ErrorResponse =
-      e instanceof HttpError
-        ? { ...e.payload, trace_id: trace?.id }
-        : { ok: false, error: String(e?.message || e || "server_error"), trace_id: trace?.id };
+      error instanceof HttpError
+        ? { ...error.payload, trace_id: trace?.id ?? null }
+        : {
+            ok: false,
+            error: String(error instanceof Error ? error.message : error || "server_error"),
+            trace_id: trace?.id ?? null,
+          };
 
-    req.log.error({ err: e }, "chat_error");
+    req.log.error({ err: error }, "chat_error");
     return reply.code(status).send(payload);
   }
 }
