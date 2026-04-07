@@ -54,14 +54,16 @@ export type ErrorResponse = {
   details?: string;
 };
 
-export type AGI = {
+export type AgiDef = {
   id: string;
   name: string;
-  description: string;
-  version?: string;
+  kind: string;
+  level: number;
+  parent_id: string | null;
   tags: string[];
-  level?: string;
-  parent_id?: string | null;
-  kind?: string;
   system_prompt: string;
+  description?: string;
+  version?: string;
 };
+
+export type AGI = AgiDef;
