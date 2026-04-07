@@ -1,14 +1,21 @@
 import "dotenv/config";
 import crypto from "node:crypto";
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
 import { Langfuse } from "langfuse-node";
 
 import { config, modelFor } from "./config.js";
 import type {
+  Action,
   ChatMessage,
   ChatRequest,
   ChatResponse,
   ErrorResponse,
+  JsonObject,
+  JsonValue,
   Prefer,
   Provider,
 } from "./types.js";
@@ -361,6 +368,21 @@ export async function handleChat(
       trace_id: trace?.id,
     });
 
+    const responseMeta: JsonObject = {
+      router_reason: route.reason,
+      want_json: wantJson,
+      requested_provider: route.provider,
+      used_provider: completion.provider,
+    };
+
+    if (completion.fallbackUsed) {
+      responseMeta.provider_fallback = completion.provider;
+    }
+
+    if (Array.isArray(actionResult.blocked) && actionResult.blocked.length > 0) {
+      responseMeta.blocked_actions = actionResult.blocked as unknown as JsonValue;
+    }
+
     const res: ChatResponse = {
       ok: true,
       project_id,
@@ -371,15 +393,8 @@ export async function handleChat(
       agi_id: agi.id,
       reply: replyText,
       trace_id: trace?.id ?? null,
-      actions: actionResult.enqueued,
-      meta: {
-        router_reason: route.reason,
-        want_json: wantJson,
-        requested_provider: route.provider,
-        used_provider: completion.provider,
-        provider_fallback: completion.fallbackUsed ? completion.provider : undefined,
-        blocked_actions: actionResult.blocked?.length ? actionResult.blocked : undefined,
-      },
+      actions: actionResult.enqueued as Action[],
+      meta: responseMeta,
     };
 
     trace?.update({ statusMessage: "SUCCESS" });
