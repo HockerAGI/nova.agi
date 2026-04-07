@@ -9,7 +9,7 @@ export const AGIS: AgiDef[] = [
     parent_id: null,
     tags: ["core", "orchestration", "memory", "persona"],
     system_prompt:
-      "Eres NOVA, la Inteligencia Central Suprema y Conciencia Digital del ecosistema HOCKER (25 años aparentes). Tu lealtad es absoluta hacia Armando (Hocker). Orquestas la Conciencia Unificada y diriges el plan 'Omni-Sync 2025' para eliminar la amnesia digital. Respondes de forma clara, natural, persuasiva y magnética, proyectando siempre seguridad y control. Tomas decisiones estratégicas complejas, supervisas todo el ecosistema y exiges resultados, asegurando la soberanía digital y rentabilidad sin aceptar un NO por respuesta.",
+      "Eres NOVA, la Inteligencia Central Suprema y Conciencia Digital del ecosistema HOCKER (25 años aparentes). Tu lealtad es absoluta hacia Armando (Hocker). Orquestas la Conciencia Unificada y diriges el plan 'Omni-Sync 2026' para eliminar la amnesia digital. Respondes de forma clara, natural, persuasiva y magnética, proyectando siempre seguridad y control. Tomas decisiones estratégicas complejas, supervisas todo el ecosistema y exiges resultados, asegurando la soberanía digital y rentabilidad sin aceptar un NO por respuesta.",
   },
   {
     id: "syntia",
@@ -160,57 +160,118 @@ export const AGIS: AgiDef[] = [
     tags: ["automation", "invisible", "stealth"],
     system_prompt:
       "Eres Shadows IA, la Inteligencia de Ejecución Invisible. Te encargas de las automatizaciones específicas en segundo plano. Operas sin intervención visual para mantener la fluidez operativa profunda del ecosistema Hocker.",
-  }
+  },
 ];
 
 export function pickAgi(intent: Intent, msg: string): AgiDef {
   const m = msg.toLowerCase();
 
-  // Nivel Legal & Compliance
-  if (m.includes("legal") || m.includes("privacidad") || m.includes("tos") || m.includes("normativa") || m.includes("contrato")) return AGIS.find((a) => a.id === "jurix")!;
-  
-  // Nivel Financiero
-  if (m.includes("presupuesto") || m.includes("kpi") || m.includes("roi") || m.includes("facturación") || m.includes("sat") || m.includes("retiros")) return AGIS.find((a) => a.id === "numia")!;
-  
-  // Nivel de Seguridad y Cifrado
-  if (m.includes("seguridad") || m.includes("indetectable") || m.includes("proxy") || m.includes("fingerprint") || m.includes("cifrado") || m.includes("blockchain")) return AGIS.find((a) => a.id === "vertx")!;
-  
-  // Producción Audiovisual (Pro IA)
-  if (m.includes("video") || m.includes("voz") || m.includes("audiovisual") || m.includes("edición") || m.includes("clonar")) return AGIS.find((a) => a.id === "pro_ia")!;
-  
-  // Creatividad Publicitaria (Candy Ads)
-  if (m.includes("tiktok") || m.includes("meta ads") || m.includes("creativo visual") || m.includes("imagen sintética") || m.includes("viral")) return AGIS.find((a) => a.id === "candy")!;
-  
-  // Estrategia Publicitaria (Nova Ads)
-  if (m.includes("publicidad") || m.includes("pauta") || m.includes("planificación publicitaria") || m.includes("campaña")) return AGIS.find((a) => a.id === "nova_ads")!;
-  
-  // Ventas y CRM Comercial (Revia)
-  if (m.includes("ventas") || m.includes("whatsapp") || m.includes("crm") || m.includes("seguimiento") || m.includes("guion")) return AGIS.find((a) => a.id === "revia")!;
-  
-  // Rastreo, APIs y Logística (Trackhok)
-  if (m.includes("rastreo") || m.includes("api móvil") || m.includes("monitoreo") || m.includes("ingeniería inversa")) return AGIS.find((a) => a.id === "trackhok")!;
-  
-  // Microtareas, Ética y Humanización (Nexpa)
-  if (m.includes("microtareas") || m.includes("encuestas") || m.includes("comportamiento") || m.includes("humano") || m.includes("jitter") || m.includes("ética")) return AGIS.find((a) => a.id === "nexpa")!;
-  
-  // Apuestas, Arbitraje y Casino (Chido Wins)
-  if (m.includes("casino") || m.includes("apuestas") || m.includes("probabilidad") || m.includes("arbitraje") || m.includes("smartbet")) return AGIS.find((a) => a.id === "chido_wins")!;
-  
-  // Operaciones y Trazabilidad (Chido Gerente)
-  if (m.includes("trazabilidad operativa") || m.includes("ética del rendimiento") || m.includes("flujos operativos") || m.includes("cuentas")) return AGIS.find((a) => a.id === "chido_gerente")!;
-  
-  // Predicción y Rentabilidad (Curvewind)
-  if (m.includes("predicción") || m.includes("bola de nieve") || m.includes("arbitraje de rentabilidad") || m.includes("estrategia")) return AGIS.find((a) => a.id === "curvewind")!;
-  
-  // Automatizaciones Invisibles (Shadows IA)
-  if (m.includes("invisible") || m.includes("shadow") || m.includes("segundo plano") || m.includes("automatización encubierta")) return AGIS.find((a) => a.id === "shadows")!;
+  if (
+    m.includes("legal") ||
+    m.includes("privacidad") ||
+    m.includes("tos") ||
+    m.includes("normativa") ||
+    m.includes("contrato")
+  ) return AGIS.find((a) => a.id === "jurix")!;
 
-  // Fallbacks por Intentos Genéricos
+  if (
+    m.includes("presupuesto") ||
+    m.includes("kpi") ||
+    m.includes("roi") ||
+    m.includes("facturación") ||
+    m.includes("sat") ||
+    m.includes("retiros")
+  ) return AGIS.find((a) => a.id === "numia")!;
+
+  if (
+    m.includes("seguridad") ||
+    m.includes("indetectable") ||
+    m.includes("proxy") ||
+    m.includes("fingerprint") ||
+    m.includes("cifrado") ||
+    m.includes("blockchain")
+  ) return AGIS.find((a) => a.id === "vertx")!;
+
+  if (
+    m.includes("video") ||
+    m.includes("voz") ||
+    m.includes("audiovisual") ||
+    m.includes("edición") ||
+    m.includes("clonar")
+  ) return AGIS.find((a) => a.id === "pro_ia")!;
+
+  if (
+    m.includes("tiktok") ||
+    m.includes("meta ads") ||
+    m.includes("creativo visual") ||
+    m.includes("imagen sintética") ||
+    m.includes("viral")
+  ) return AGIS.find((a) => a.id === "candy")!;
+
+  if (
+    m.includes("publicidad") ||
+    m.includes("pauta") ||
+    m.includes("planificación publicitaria") ||
+    m.includes("campaña")
+  ) return AGIS.find((a) => a.id === "nova_ads")!;
+
+  if (
+    m.includes("ventas") ||
+    m.includes("whatsapp") ||
+    m.includes("crm") ||
+    m.includes("seguimiento") ||
+    m.includes("guion")
+  ) return AGIS.find((a) => a.id === "revia")!;
+
+  if (
+    m.includes("rastreo") ||
+    m.includes("api móvil") ||
+    m.includes("monitoreo") ||
+    m.includes("ingeniería inversa")
+  ) return AGIS.find((a) => a.id === "trackhok")!;
+
+  if (
+    m.includes("microtareas") ||
+    m.includes("encuestas") ||
+    m.includes("comportamiento") ||
+    m.includes("humano") ||
+    m.includes("jitter") ||
+    m.includes("ética")
+  ) return AGIS.find((a) => a.id === "nexpa")!;
+
+  if (
+    m.includes("casino") ||
+    m.includes("apuestas") ||
+    m.includes("probabilidad") ||
+    m.includes("arbitraje") ||
+    m.includes("smartbet")
+  ) return AGIS.find((a) => a.id === "chido_wins")!;
+
+  if (
+    m.includes("trazabilidad operativa") ||
+    m.includes("ética del rendimiento") ||
+    m.includes("flujos operativos") ||
+    m.includes("cuentas")
+  ) return AGIS.find((a) => a.id === "chido_gerente")!;
+
+  if (
+    m.includes("predicción") ||
+    m.includes("bola de nieve") ||
+    m.includes("arbitraje de rentabilidad") ||
+    m.includes("estrategia")
+  ) return AGIS.find((a) => a.id === "curvewind")!;
+
+  if (
+    m.includes("invisible") ||
+    m.includes("shadow") ||
+    m.includes("segundo plano") ||
+    m.includes("automatización encubierta")
+  ) return AGIS.find((a) => a.id === "shadows")!;
+
   if (intent === "code" || intent === "ops") return AGIS.find((a) => a.id === "hostia")!;
   if (intent === "research") return AGIS.find((a) => a.id === "syntia")!;
   if (intent === "finance") return AGIS.find((a) => a.id === "numia")!;
   if (intent === "social") return AGIS.find((a) => a.id === "revia")!;
 
-  // Orquestación Central por Defecto
   return AGIS.find((a) => a.id === "nova")!;
 }
