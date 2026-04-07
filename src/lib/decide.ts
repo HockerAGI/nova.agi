@@ -32,24 +32,24 @@ function candidateProviders(prefer: Prefer): Array<"openai" | "gemini"> {
   const openaiReady = providerAvailable("openai");
   const geminiReady = providerAvailable("gemini");
 
+  const providers: Array<"openai" | "gemini"> = [];
+
   if (prefer === "openai") {
-    return [
-      ...(openaiReady ? ["openai" as const] : []),
-      ...(geminiReady ? ["gemini" as const] : []),
-    ];
+    if (openaiReady) providers.push("openai");
+    if (geminiReady) providers.push("gemini");
+    return providers;
   }
 
   if (prefer === "gemini") {
-    return [
-      ...(geminiReady ? ["gemini" as const] : []),
-      ...(openaiReady ? ["openai" as const] : []),
-    ];
+    if (geminiReady) providers.push("gemini");
+    if (openaiReady) providers.push("openai");
+    return providers;
   }
 
-  if (openaiReady) return ["openai", ...(geminiReady ? ["gemini"] : [])];
-  if (geminiReady) return ["gemini", ...(openaiReady ? ["openai"] : [])];
+  if (openaiReady) providers.push("openai");
+  if (geminiReady) providers.push("gemini");
 
-  return [];
+  return providers;
 }
 
 export async function decideIntent(message: string, prefer: Prefer): Promise<Decision> {
@@ -98,7 +98,10 @@ export async function decideIntent(message: string, prefer: Prefer): Promise<Dec
   }
 
   if (lastError) {
-    console.error("Router Cognitivo Falló:", lastError instanceof Error ? lastError.message : String(lastError));
+    console.error(
+      "Router Cognitivo Falló:",
+      lastError instanceof Error ? lastError.message : String(lastError),
+    );
   }
 
   return { intent: "general", reason: "Fallback_parse_error" };
