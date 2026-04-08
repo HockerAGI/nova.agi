@@ -25,6 +25,7 @@ import { pickAgi } from "./lib/agis.js";
 import { ensureThread, loadThread, appendMessage, toChatRole } from "./lib/memory.js";
 import { openaiRespond, type OpenAiResult } from "./providers/openai.js";
 import { geminiRespond, type GeminiResult } from "./providers/gemini.js";
+import { ollamaRespond } from "./providers/ollama.js";
 import { enqueueActions } from "./lib/actions.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { parseStableJson } from "./lib/stable-json.js";
@@ -156,66 +157,79 @@ async function runCompletionWithFallback(args: {
   messages: ChatMessage[];
   jsonMode: boolean;
 }): Promise<CompletionResult> {
-  const candidates: Provider[] =
-    args.preferredProvider === "openai" ? ["openai", "gemini"] : ["gemini", "openai"];
+
+  const candidates: Array<Provider | "ollama"> =
+    args.preferredProvider === "openai"
+      ? ["openai", "gemini", "ollama"]
+      : ["gemini", "openai", "ollama"];
 
   let lastError: unknown = null;
 
   for (const provider of candidates) {
-    if (!providerAvailable(provider)) continue;
-
-    if (config.budgets.enabled) {
-      const used = await tokensUsedThisMonth(args.project_id, provider);
-      const limit = providerBudgetLimit(provider);
-
-      if (used >= limit) {
-        lastError = new HttpError(429, {
-          ok: false,
-          error: `Límite mensual alcanzado para ${provider}.`,
-        });
-        continue;
-      }
-    }
-
-    const apiKey = provider === "openai" ? config.openai.apiKey : config.gemini.apiKey;
-    if (!apiKey) continue;
-
-    const model = modelFor(provider, args.mode);
-
     try {
-      const result: OpenAiResult | GeminiResult =
-        provider === "openai"
-          ? await openaiRespond({
-              apiKey,
-              model,
-              messages: args.messages,
-              jsonMode: args.jsonMode,
-            })
-          : await geminiRespond({
-              apiKey,
-              model,
-              messages: args.messages,
-              jsonMode: args.jsonMode,
-            });
+      // 🔵 OPENAI
+      if (provider === "openai" && config.openai.apiKey) {
+        const result = await openaiRespond({
+          apiKey: config.openai.apiKey,
+          model: modelFor("openai", args.mode),
+          messages: args.messages,
+          jsonMode: args.jsonMode,
+        });
 
-      return {
-        provider,
-        model,
-        text: result.text,
-        usage: result.usage,
-        fallbackUsed: provider !== args.preferredProvider,
-      };
-    } catch (error: unknown) {
+        return {
+          provider: "openai",
+          model: modelFor("openai", args.mode),
+          text: result.text,
+          usage: result.usage,
+          fallbackUsed: provider !== args.preferredProvider,
+        };
+      }
+
+      // 🟣 GEMINI
+      if (provider === "gemini" && config.gemini.apiKey) {
+        const result = await geminiRespond({
+          apiKey: config.gemini.apiKey,
+          model: modelFor("gemini", args.mode),
+          messages: args.messages,
+          jsonMode: args.jsonMode,
+        });
+
+        return {
+          provider: "gemini",
+          model: modelFor("gemini", args.mode),
+          text: result.text,
+          usage: result.usage,
+          fallbackUsed: provider !== args.preferredProvider,
+        };
+      }
+
+      // 🟢 OLLAMA (LOCAL, SIN COSTO)
+      if (provider === "ollama") {
+        const result = await ollamaRespond({
+          model: "llama3:8b",
+          messages: args.messages,
+        });
+
+        return {
+          provider: "ollama" as Provider,
+          model: "llama3:8b",
+          text: result.text,
+          usage: undefined,
+          fallbackUsed: provider !== args.preferredProvider,
+        };
+      }
+
+    } catch (error) {
       lastError = error;
     }
   }
 
-  if (lastError instanceof HttpError) throw lastError;
-  if (lastError instanceof Error) throw lastError;
-
   throw new HttpError(503, {
     ok: false,
-    error: "No hay proveedor LLM disponible.",
+    error:
+      lastError instanceof Error
+        ? lastError.message
+        : "No hay proveedor disponible",
   });
 }
 
