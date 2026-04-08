@@ -10,9 +10,12 @@ export function toChatRole(r: string): ChatRole {
 
 export async function ensureThread(opts: { project_id: string; thread_id: string }) {
   const thread_id = String(opts.thread_id || "").trim();
-  if (!thread_id) throw new Error("thread_id requerido");
 
-  // 🔍 Buscar correctamente por thread_id
+  if (!thread_id) {
+    throw new Error("thread_id requerido");
+  }
+
+  // 🔍 Buscar por thread_id REAL (no id)
   const { data, error } = await sb
     .from("nova_threads")
     .select("id")
@@ -20,14 +23,16 @@ export async function ensureThread(opts: { project_id: string; thread_id: string
     .eq("thread_id", thread_id)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(error.message);
+  }
 
-  // 🚀 Si no existe, crear correctamente
+  // 🚀 Crear si no existe
   if (!data?.id) {
     const { error: insertErr } = await sb.from("nova_threads").insert({
-      id: crypto.randomUUID(),        // PK real
+      id: crypto.randomUUID(),           // PK interna
       project_id: opts.project_id,
-      thread_id: thread_id,           // 🔥 FIX CLAVE
+      thread_id: thread_id,              // 🔥 CAMPO REAL
       created_at: new Date().toISOString(),
     });
 
