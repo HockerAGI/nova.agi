@@ -3,24 +3,58 @@ export type JsonArray = JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 
-export type Provider = "openai" | "gemini";
+/**
+ * 🔥 PROVIDERS SOPORTADOS (ACTUALIZADO)
+ * Se agrega "ollama" como proveedor local autónomo
+ */
+export type Provider = "openai" | "gemini" | "ollama";
+
+/**
+ * Modos de ejecución
+ */
 export type Mode = "auto" | "fast" | "pro";
-export type Intent = "general" | "code" | "ops" | "research" | "finance" | "social";
+
+/**
+ * Intenciones del router cognitivo
+ */
+export type Intent =
+  | "general"
+  | "code"
+  | "ops"
+  | "research"
+  | "finance"
+  | "social";
+
+/**
+ * Preferencia de proveedor
+ */
 export type Prefer = Provider | "auto";
 
+/**
+ * Roles del chat
+ */
 export type ChatRole = "system" | "user" | "assistant";
 
+/**
+ * Mensaje base
+ */
 export type ChatMessage = {
   role: ChatRole;
   content: string;
 };
 
+/**
+ * Acción ejecutable dentro del ecosistema
+ */
 export type Action = {
   node_id?: string;
   command: string;
   payload?: JsonObject;
 };
 
+/**
+ * Request del endpoint /chat
+ */
 export type ChatRequest = {
   project_id?: string;
   thread_id?: string | null;
@@ -33,6 +67,9 @@ export type ChatRequest = {
   user_email?: string | null;
 };
 
+/**
+ * Respuesta exitosa
+ */
 export type ChatResponse = {
   ok: true;
   project_id: string;
@@ -47,6 +84,9 @@ export type ChatResponse = {
   meta?: JsonObject;
 };
 
+/**
+ * Respuesta de error
+ */
 export type ErrorResponse = {
   ok: false;
   error: string;
@@ -54,6 +94,9 @@ export type ErrorResponse = {
   details?: string;
 };
 
+/**
+ * Definición de AGI
+ */
 export type AgiDef = {
   id: string;
   name: string;
