@@ -4,10 +4,10 @@ export type JsonObject = { [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 
 /**
- * 🔥 PROVIDERS SOPORTADOS (ACTUALIZADO)
- * Se agrega "ollama" como proveedor local autónomo
+ * Proveedores soportados.
+ * OpenAI y Gemini para cloud, Ollama para local.
  */
-export type Provider = "openai" | "gemini" | "phi:latest";
+export type Provider = "openai" | "gemini" | "ollama";
 
 /**
  * Modos de ejecución
