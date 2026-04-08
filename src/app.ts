@@ -170,17 +170,33 @@ async function runCompletionWithFallback(args: {
   messages: ChatMessage[];
   jsonMode: boolean;
 }): Promise<CompletionResult> {
-  const candidates: Provider[] =
-    args.preferredProvider === "openai"
+  const localFirst = args.mode === "fast" || args.preferredProvider === "ollama";
+
+  const candidates: Provider[] = localFirst
+    ? ["ollama", "openai", "gemini"]
+    : args.preferredProvider === "openai"
       ? ["openai", "gemini", "ollama"]
-      : args.preferredProvider === "gemini"
-        ? ["gemini", "openai", "ollama"]
-        : ["ollama", "openai", "gemini"];
+      : ["gemini", "openai", "ollama"];
 
   let lastError: unknown = null;
 
   for (const provider of candidates) {
     try {
+      if (provider === "ollama") {
+        const result = await ollamaRespond({
+          model: OLLAMA_MODEL,
+          messages: args.messages,
+        });
+
+        return {
+          provider: "ollama",
+          model: OLLAMA_MODEL,
+          text: result.text,
+          usage: undefined,
+          fallbackUsed: provider !== args.preferredProvider,
+        };
+      }
+
       if (provider === "openai" && config.openai.apiKey) {
         const result: OpenAiResult = await openaiRespond({
           apiKey: config.openai.apiKey,
@@ -211,21 +227,6 @@ async function runCompletionWithFallback(args: {
           model: modelFor("gemini", args.mode),
           text: result.text,
           usage: result.usage,
-          fallbackUsed: provider !== args.preferredProvider,
-        };
-      }
-
-      if (provider === "ollama") {
-        const result = await ollamaRespond({
-          model: OLLAMA_MODEL,
-          messages: args.messages,
-        });
-
-        return {
-          provider: "ollama",
-          model: OLLAMA_MODEL,
-          text: result.text,
-          usage: undefined,
           fallbackUsed: provider !== args.preferredProvider,
         };
       }
