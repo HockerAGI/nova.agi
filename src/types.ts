@@ -7,7 +7,7 @@ export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
  * 🔥 PROVIDERS SOPORTADOS (ACTUALIZADO)
  * Se agrega "ollama" como proveedor local autónomo
  */
-export type Provider = "openai" | "gemini" | "ollama";
+export type Provider = "openai" | "gemini" | "phi:latest";
 
 /**
  * Modos de ejecución
