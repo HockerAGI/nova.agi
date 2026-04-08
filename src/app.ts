@@ -22,7 +22,12 @@ import type {
 import { requireAuth, HttpError } from "./lib/http.js";
 import { chooseRoute } from "./lib/router.js";
 import { pickAgi } from "./lib/agis.js";
-import { ensureThread, loadThread, appendMessage, toChatRole } from "./lib/memory.js";
+import {
+  ensureThread,
+  loadThread,
+  appendMessage,
+  toChatRole,
+} from "./lib/memory.js";
 import { openaiRespond, type OpenAiResult } from "./providers/openai.js";
 import { geminiRespond, type GeminiResult } from "./providers/gemini.js";
 import { ollamaRespond } from "./providers/ollama.js";
@@ -62,6 +67,8 @@ type CompletionResult = {
   fallbackUsed: boolean;
 };
 
+const OLLAMA_MODEL = "phi:latest";
+
 function createLangfuseClient(): Langfuse | null {
   try {
     return new Langfuse({
@@ -70,7 +77,10 @@ function createLangfuseClient(): Langfuse | null {
       baseUrl: config.langfuse.baseUrl,
     });
   } catch (error: unknown) {
-    console.warn("Langfuse deshabilitado: no se pudo inicializar el cliente.", error);
+    console.warn(
+      "Langfuse deshabilitado: no se pudo inicializar el cliente.",
+      error,
+    );
     return null;
   }
 }
@@ -89,7 +99,9 @@ function asString(value: unknown, fallback = ""): string {
 
 function normalizePrefer(value: unknown): Prefer {
   const s = String(value ?? "auto").trim().toLowerCase();
-  if (s === "openai" || s === "gemini" || s === "auto") return s;
+  if (s === "openai" || s === "gemini" || s === "ollama" || s === "auto") {
+    return s;
+  }
   return "auto";
 }
 
@@ -141,6 +153,7 @@ function buildSystemPrompt(args: {
 }
 
 function providerAvailable(provider: Provider): boolean {
+  if (provider === "ollama") return true;
   return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
 }
 
@@ -157,19 +170,19 @@ async function runCompletionWithFallback(args: {
   messages: ChatMessage[];
   jsonMode: boolean;
 }): Promise<CompletionResult> {
-
-  const candidates: Array<Provider | "ollama"> =
+  const candidates: Provider[] =
     args.preferredProvider === "openai"
       ? ["openai", "gemini", "ollama"]
-      : ["gemini", "openai", "ollama"];
+      : args.preferredProvider === "gemini"
+        ? ["gemini", "openai", "ollama"]
+        : ["ollama", "openai", "gemini"];
 
   let lastError: unknown = null;
 
   for (const provider of candidates) {
     try {
-      // 🔵 OPENAI
       if (provider === "openai" && config.openai.apiKey) {
-        const result = await openaiRespond({
+        const result: OpenAiResult = await openaiRespond({
           apiKey: config.openai.apiKey,
           model: modelFor("openai", args.mode),
           messages: args.messages,
@@ -185,9 +198,8 @@ async function runCompletionWithFallback(args: {
         };
       }
 
-      // 🟣 GEMINI
       if (provider === "gemini" && config.gemini.apiKey) {
-        const result = await geminiRespond({
+        const result: GeminiResult = await geminiRespond({
           apiKey: config.gemini.apiKey,
           model: modelFor("gemini", args.mode),
           messages: args.messages,
@@ -203,33 +215,31 @@ async function runCompletionWithFallback(args: {
         };
       }
 
-      // 🟢 OLLAMA (LOCAL, SIN COSTO)
       if (provider === "ollama") {
         const result = await ollamaRespond({
-          model: "llama3:8b",
+          model: OLLAMA_MODEL,
           messages: args.messages,
         });
 
         return {
-          provider: "ollama" as Provider,
-          model: "llama3:8b",
+          provider: "ollama",
+          model: OLLAMA_MODEL,
           text: result.text,
           usage: undefined,
           fallbackUsed: provider !== args.preferredProvider,
         };
       }
-
-    } catch (error) {
+    } catch (error: unknown) {
       lastError = error;
     }
   }
 
+  if (lastError instanceof HttpError) throw lastError;
+  if (lastError instanceof Error) throw lastError;
+
   throw new HttpError(503, {
     ok: false,
-    error:
-      lastError instanceof Error
-        ? lastError.message
-        : "No hay proveedor disponible",
+    error: "No hay proveedor LLM disponible.",
   });
 }
 
@@ -447,10 +457,14 @@ export function buildNovaApp(opts?: { logger?: boolean }): FastifyInstance {
     service: "nova.agi.orchestrator",
     fabric_ready: true,
     hocker_one_api_url: config.hockerOneApiUrl,
-    provider_ready: providerAvailable("openai") || providerAvailable("gemini"),
+    provider_ready:
+      providerAvailable("openai") ||
+      providerAvailable("gemini") ||
+      providerAvailable("ollama"),
     providers: {
       openai: providerAvailable("openai"),
       gemini: providerAvailable("gemini"),
+      ollama: providerAvailable("ollama"),
     },
     budgets: {
       enabled: config.budgets.enabled,
