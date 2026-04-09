@@ -1,10 +1,10 @@
 import { config, modelFor } from "../config.js";
 import { decideIntent } from "./decide.js";
-import type { Intent, Prefer } from "../types.js";
+import type { Intent, Prefer, Provider } from "../types.js";
 
 export type RouteResult = {
   intent: Intent;
-  provider: "openai" | "gemini";
+  provider: Provider;
   model: string;
   reason: string;
 };
@@ -16,8 +16,22 @@ type ChooseOpts = {
   mode: string;
 };
 
-function providerAvailable(provider: "openai" | "gemini") {
-  return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
+function providerAvailable(provider: Provider): boolean {
+  if (provider === "ollama") return Boolean(config.ollama.enabled);
+  return Boolean(
+    provider === "openai"
+      ? config.openai.apiKey
+      : provider === "gemini"
+        ? config.gemini.apiKey
+        : config.anthropic.apiKey,
+  );
+}
+
+function firstAvailable(preferred: Provider[]): Provider {
+  for (const provider of preferred) {
+    if (providerAvailable(provider)) return provider;
+  }
+  return "ollama";
 }
 
 export async function chooseRoute(opts: ChooseOpts): Promise<RouteResult> {
@@ -29,26 +43,24 @@ export async function chooseRoute(opts: ChooseOpts): Promise<RouteResult> {
 
   const decision = await decideIntent(message, prefer);
 
-  let provider: "openai" | "gemini" = providerAvailable("openai") ? "openai" : "gemini";
+  let provider: Provider;
 
-  if (prefer === "gemini") {
-    provider = providerAvailable("gemini") ? "gemini" : providerAvailable("openai") ? "openai" : "gemini";
-  } else if (prefer === "openai") {
-    provider = providerAvailable("openai") ? "openai" : providerAvailable("gemini") ? "gemini" : "openai";
+  if (prefer !== "auto") {
+    provider = providerAvailable(prefer) ? prefer : firstAvailable(["anthropic", "openai", "gemini", "ollama"]);
+  } else if (decision.intent === "code" || decision.intent === "ops" || decision.intent === "research") {
+    provider = firstAvailable(["anthropic", "openai", "gemini", "ollama"]);
+  } else if (decision.intent === "social") {
+    provider = firstAvailable(["gemini", "anthropic", "openai", "ollama"]);
+  } else if (decision.intent === "finance") {
+    provider = firstAvailable(["anthropic", "openai", "gemini", "ollama"]);
   } else {
-    if (decision.intent === "code" || decision.intent === "ops") {
-      provider = providerAvailable("openai") ? "openai" : providerAvailable("gemini") ? "gemini" : "openai";
-    } else {
-      provider = providerAvailable("gemini") ? "gemini" : providerAvailable("openai") ? "openai" : "gemini";
-    }
+    provider = firstAvailable(["anthropic", "gemini", "openai", "ollama"]);
   }
-
-  const finalModel = modelFor(provider, safeMode);
 
   return {
     intent: decision.intent,
     provider,
-    model: finalModel,
+    model: modelFor(provider, safeMode),
     reason: decision.reason,
   };
 }
