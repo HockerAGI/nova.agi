@@ -7,56 +7,63 @@ import Fastify, {
 } from "fastify";
 import { Langfuse } from "langfuse-node";
 
-import { config, modelFor } from "./config.js";
-import type {
-  Action,
-  ChatMessage,
-  ChatRequest,
-  ChatResponse,
-  ErrorResponse,
-  JsonObject,
-  JsonValue,
-  Prefer,
-  Provider,
-} from "./types.js";
+import { config } from "./config.js";
 import { requireAuth, HttpError } from "./lib/http.js";
-import { chooseRoute } from "./lib/router.js";
+import { detectIntent } from "./lib/intents.js";
 import { pickAgi } from "./lib/agis.js";
-import {
-  ensureThread,
-  loadThread,
-  appendMessage,
-  toChatRole,
-} from "./lib/memory.js";
-import { openaiRespond, type OpenAiResult } from "./providers/openai.js";
-import { geminiRespond, type GeminiResult } from "./providers/gemini.js";
+import { ensureThread, loadThread, appendMessage, toChatRole } from "./lib/memory.js";
+import { openaiRespond } from "./providers/openai.js";
+import { geminiRespond } from "./providers/gemini.js";
+import { anthropicRespond } from "./providers/anthropic.js";
 import { ollamaRespond } from "./providers/ollama.js";
 import { enqueueActions } from "./lib/actions.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { parseStableJson } from "./lib/stable-json.js";
 
+type Intent =
+  | "general"
+  | "code"
+  | "ops"
+  | "research"
+  | "finance"
+  | "social";
+
+type Provider = "openai" | "gemini" | "anthropic" | "ollama";
 type CompletionMode = "auto" | "fast" | "pro";
+type Prefer = Provider | "auto";
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+type JsonObject = { [key: string]: JsonValue };
+
+type Action = {
+  node_id?: string;
+  command: string;
+  payload?: JsonObject;
+};
+
+type ChatRequestBody = {
+  project_id?: string;
+  thread_id?: string | null;
+  message?: string;
+  text?: string;
+  prefer?: string;
+  mode?: string;
+  allow_actions?: boolean;
+  user_id?: string | null;
+  user_email?: string | null;
+  context_data?: JsonObject | null;
+};
 
 type ChatHeaders = {
   authorization?: string;
   "x-allow-actions"?: string;
 };
 
-type CompletionGeneration = {
-  end: (args: {
-    output: string;
-    usage?: {
-      promptTokens?: number;
-      completionTokens?: number;
-    };
-  }) => void;
-};
-
-type LangfuseTraceLike = {
-  id?: string;
-  event: (args: Record<string, unknown>) => void;
-  update: (args: Record<string, unknown>) => void;
-  generation: (args: Record<string, unknown>) => CompletionGeneration;
+type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
 };
 
 type CompletionResult = {
@@ -67,20 +74,57 @@ type CompletionResult = {
   fallbackUsed: boolean;
 };
 
-const OLLAMA_MODEL = "phi:latest";
+type ChatResponse = {
+  ok: true;
+  project_id: string;
+  thread_id: string;
+  provider: Provider;
+  model: string;
+  intent: Intent;
+  agi_id: string;
+  reply: string;
+  trace_id: string | null;
+  actions: Action[];
+  meta: JsonObject;
+};
+
+type ErrorResponse = {
+  ok: false;
+  error: string;
+  trace_id: string | null;
+  details?: string;
+};
+
+type LangfuseTraceLike = {
+  id?: string;
+  event: (args: Record<string, unknown>) => void;
+  update: (args: Record<string, unknown>) => void;
+  generation: (args: Record<string, unknown>) => {
+    end: (args: {
+      output: string;
+      usage?: {
+        promptTokens?: number;
+        completionTokens?: number;
+      };
+    }) => void;
+  };
+};
 
 function createLangfuseClient(): Langfuse | null {
+  const publicKey = process.env.LANGFUSE_PUBLIC_KEY?.trim();
+  const secretKey = process.env.LANGFUSE_SECRET_KEY?.trim();
+  const baseUrl = process.env.LANGFUSE_BASE_URL?.trim() || "https://cloud.langfuse.com";
+
+  if (!publicKey || !secretKey) return null;
+
   try {
     return new Langfuse({
-      publicKey: config.langfuse.publicKey,
-      secretKey: config.langfuse.secretKey,
-      baseUrl: config.langfuse.baseUrl,
+      publicKey,
+      secretKey,
+      baseUrl,
     });
-  } catch (error: unknown) {
-    console.warn(
-      "Langfuse deshabilitado: no se pudo inicializar el cliente.",
-      error,
-    );
+  } catch (error) {
+    console.warn("Langfuse deshabilitado: no se pudo inicializar el cliente.", error);
     return null;
   }
 }
@@ -99,8 +143,8 @@ function asString(value: unknown, fallback = ""): string {
 
 function normalizePrefer(value: unknown): Prefer {
   const s = String(value ?? "auto").trim().toLowerCase();
-  if (s === "openai" || s === "gemini" || s === "ollama" || s === "auto") {
-    return s;
+  if (s === "openai" || s === "gemini" || s === "anthropic" || s === "ollama" || s === "auto") {
+    return s as Prefer;
   }
   return "auto";
 }
@@ -111,141 +155,246 @@ function normalizeMode(value: unknown): CompletionMode {
   return "auto";
 }
 
-function titleFromMessage(message: string): string {
-  const clean = message.replace(/\s+/g, " ").trim();
-  return clean.length <= 60 ? clean : `${clean.slice(0, 57)}...`;
-}
-
-function safeJsonParse(text: string): unknown | null {
-  const stable = parseStableJson(text);
-  if (stable) return stable;
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function buildSystemPrompt(args: {
-  agiPrompt: string;
-  project_id: string;
-  thread_id: string;
-  user_email?: string | null;
-  wantJson: boolean;
-}): string {
-  const { agiPrompt, project_id, thread_id, user_email, wantJson } = args;
-
-  const base =
-    `${agiPrompt}\n\n` +
-    `Contexto:\n- project_id: ${project_id}\n- thread_id: ${thread_id}\n` +
-    (user_email ? `- user_email: ${user_email}\n` : "") +
-    `\nReglas:\n- Responde claro, directo, en español.\n- Si falta info, pregunta lo mínimo.\n`;
-
-  if (!wantJson) return base;
-
-  return (
-    base +
-    "\nIMPORTANTE: Responde SOLO en JSON válido. Debe incluir la palabra JSON en el contenido.\n" +
-    'Formato JSON esperado: {"reply": string, "actions": [{"command": string, "payload": object, "node_id"?: string}] }\n' +
-    "Si no hay acciones, actions=[] y reply siempre va."
-  );
-}
-
 function providerAvailable(provider: Provider): boolean {
-  if (provider === "ollama") return true;
-  return Boolean(provider === "openai" ? config.openai.apiKey : config.gemini.apiKey);
+  if (provider === "openai") return Boolean(process.env.OPENAI_API_KEY?.trim());
+  if (provider === "gemini") return Boolean(process.env.GEMINI_API_KEY?.trim());
+  if (provider === "anthropic") return Boolean(process.env.ANTHROPIC_API_KEY?.trim());
+  return String(process.env.OLLAMA_ENABLED ?? "1").trim() !== "0";
 }
 
-function providerBudgetLimit(provider: Provider): number {
-  return provider === "openai"
-    ? config.budgets.openaiMonthlyTokens
-    : config.budgets.geminiMonthlyTokens;
+function resolveModel(provider: Provider, mode: CompletionMode): string {
+  if (provider === "openai") {
+    if (mode === "fast") return process.env.OPENAI_MODEL_FAST?.trim() || "gpt-4o-mini";
+    if (mode === "pro") return process.env.OPENAI_MODEL_PRO?.trim() || "gpt-4.1";
+    return process.env.OPENAI_MODEL?.trim() || "gpt-4o";
+  }
+
+  if (provider === "gemini") {
+    if (mode === "fast") return process.env.GEMINI_MODEL_FAST?.trim() || "gemini-2.0-flash-lite";
+    if (mode === "pro") return process.env.GEMINI_MODEL_PRO?.trim() || "gemini-2.5-pro";
+    return process.env.GEMINI_MODEL?.trim() || "gemini-2.0-flash";
+  }
+
+  if (provider === "anthropic") {
+    if (mode === "fast") return process.env.ANTHROPIC_MODEL_FAST?.trim() || "claude-haiku-4-5";
+    if (mode === "pro") return process.env.ANTHROPIC_MODEL_PRO?.trim() || "claude-opus-4-5";
+    return process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-5";
+  }
+
+  if (mode === "fast") return process.env.OLLAMA_MODEL_FAST?.trim() || "llama3:8b";
+  if (mode === "pro") return process.env.OLLAMA_MODEL_PRO?.trim() || "llama3.1:70b";
+  return process.env.OLLAMA_MODEL?.trim() || "llama3:8b";
+}
+
+function pickProvider(intent: Intent, prefer: Prefer): Provider {
+  const preferredCandidates: Provider[] =
+    prefer === "openai"
+      ? ["openai", "anthropic", "gemini", "ollama"]
+      : prefer === "gemini"
+        ? ["gemini", "anthropic", "openai", "ollama"]
+        : prefer === "anthropic"
+          ? ["anthropic", "openai", "gemini", "ollama"]
+          : prefer === "ollama"
+            ? ["ollama", "anthropic", "openai", "gemini"]
+            : intent === "code" || intent === "ops" || intent === "research"
+              ? ["anthropic", "openai", "gemini", "ollama"]
+              : intent === "social"
+                ? ["gemini", "anthropic", "openai", "ollama"]
+                : intent === "finance"
+                  ? ["anthropic", "openai", "gemini", "ollama"]
+                  : ["anthropic", "gemini", "openai", "ollama"];
+
+  for (const provider of preferredCandidates) {
+    if (providerAvailable(provider)) return provider;
+  }
+
+  return "ollama";
+}
+
+function extractTextFromJsonReply(text: string): { reply: string; actions: Action[]; meta: JsonObject } {
+  const parsed = parseStableJson(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { reply: text.trim(), actions: [], meta: {} };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const reply = typeof obj.reply === "string"
+    ? obj.reply.trim()
+    : typeof obj.response === "string"
+      ? obj.response.trim()
+      : text.trim();
+
+  const actions = Array.isArray(obj.actions)
+    ? (obj.actions as Action[]).filter((action) => {
+        return !!action && typeof action === "object" && typeof action.command === "string";
+      })
+    : [];
+
+  const meta =
+    obj.meta && typeof obj.meta === "object" && !Array.isArray(obj.meta)
+      ? (obj.meta as JsonObject)
+      : {};
+
+  return { reply, actions, meta };
 }
 
 async function runCompletionWithFallback(args: {
-  project_id: string;
-  preferredProvider: Provider;
+  provider: Provider;
   mode: CompletionMode;
   messages: ChatMessage[];
   jsonMode: boolean;
 }): Promise<CompletionResult> {
-  const localFirst = args.mode === "fast" || args.preferredProvider === "ollama";
-
-  const candidates: Provider[] = localFirst
-    ? ["ollama", "openai", "gemini"]
-    : args.preferredProvider === "openai"
-      ? ["openai", "gemini", "ollama"]
-      : ["gemini", "openai", "ollama"];
+  const candidates: Provider[] =
+    args.provider === "openai"
+      ? ["openai", "anthropic", "gemini", "ollama"]
+      : args.provider === "gemini"
+        ? ["gemini", "anthropic", "openai", "ollama"]
+        : args.provider === "anthropic"
+          ? ["anthropic", "openai", "gemini", "ollama"]
+          : ["ollama", "anthropic", "openai", "gemini"];
 
   let lastError: unknown = null;
 
   for (const provider of candidates) {
     try {
-      if (provider === "ollama") {
-        const result = await ollamaRespond({
-          model: OLLAMA_MODEL,
-          messages: args.messages,
-        });
+      if (!providerAvailable(provider)) continue;
 
-        return {
-          provider: "ollama",
-          model: OLLAMA_MODEL,
-          text: result.text,
-          usage: undefined,
-          fallbackUsed: provider !== args.preferredProvider,
-        };
-      }
+      const model = resolveModel(provider, args.mode);
 
-      if (provider === "openai" && config.openai.apiKey) {
-        const result: OpenAiResult = await openaiRespond({
-          apiKey: config.openai.apiKey,
-          model: modelFor("openai", args.mode),
+      if (provider === "openai") {
+        const result = await openaiRespond({
+          apiKey: process.env.OPENAI_API_KEY!.trim(),
+          model,
           messages: args.messages,
           jsonMode: args.jsonMode,
         });
 
         return {
-          provider: "openai",
-          model: modelFor("openai", args.mode),
+          provider,
+          model,
           text: result.text,
           usage: result.usage,
-          fallbackUsed: provider !== args.preferredProvider,
+          fallbackUsed: provider !== args.provider,
         };
       }
 
-      if (provider === "gemini" && config.gemini.apiKey) {
-        const result: GeminiResult = await geminiRespond({
-          apiKey: config.gemini.apiKey,
-          model: modelFor("gemini", args.mode),
+      if (provider === "gemini") {
+        const result = await geminiRespond({
+          apiKey: process.env.GEMINI_API_KEY!.trim(),
+          model,
           messages: args.messages,
           jsonMode: args.jsonMode,
         });
 
         return {
-          provider: "gemini",
-          model: modelFor("gemini", args.mode),
+          provider,
+          model,
           text: result.text,
           usage: result.usage,
-          fallbackUsed: provider !== args.preferredProvider,
+          fallbackUsed: provider !== args.provider,
         };
       }
-    } catch (error: unknown) {
+
+      if (provider === "anthropic") {
+        const result = await anthropicRespond({
+          apiKey: process.env.ANTHROPIC_API_KEY!.trim(),
+          model,
+          messages: args.messages,
+          jsonMode: args.jsonMode,
+        });
+
+        return {
+          provider,
+          model,
+          text: result.text,
+          usage: result.usage,
+          fallbackUsed: provider !== args.provider,
+        };
+      }
+
+      const result = await ollamaRespond({
+        model,
+        messages: args.messages,
+      });
+
+      return {
+        provider: "ollama",
+        model,
+        text: result.text,
+        usage: undefined,
+        fallbackUsed: provider !== args.provider,
+      };
+    } catch (error) {
       lastError = error;
     }
   }
 
-  if (lastError instanceof HttpError) throw lastError;
-  if (lastError instanceof Error) throw lastError;
-
   throw new HttpError(503, {
     ok: false,
-    error: "No hay proveedor LLM disponible.",
+    error:
+      lastError instanceof Error
+        ? lastError.message
+        : "No hay proveedor disponible",
   });
 }
 
+async function routeIntent(message: string, prefer: Prefer): Promise<{ intent: Intent; provider: Provider; model: string; reason: string }> {
+  const decision = await Promise.resolve({
+    intent: detectIntent(message),
+    reason: "Clasificación local del mensaje.",
+  });
+
+  const provider = pickProvider(decision.intent, prefer);
+  const model = resolveModel(provider, "auto");
+
+  return {
+    intent: decision.intent,
+    provider,
+    model,
+    reason: decision.reason,
+  };
+}
+
+async function buildMessages(args: {
+  agiPrompt: string;
+  history: ChatMessage[];
+  userMessage: string;
+  context_data?: JsonObject | null;
+}): Promise<ChatMessage[]> {
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content: args.agiPrompt,
+    },
+  ];
+
+  if (args.context_data && Object.keys(args.context_data).length > 0) {
+    messages.push({
+      role: "system",
+      content: `Contexto de trabajo:\n${JSON.stringify(args.context_data, null, 2)}`,
+    });
+  }
+
+  for (const item of args.history) {
+    messages.push({
+      role: item.role,
+      content: item.content,
+      name: item.name,
+    });
+  }
+
+  if (args.userMessage.trim()) {
+    messages.push({
+      role: "user",
+      content: args.userMessage.trim(),
+    });
+  }
+
+  return messages;
+}
+
 export async function handleChat(
-  req: FastifyRequest<{ Body: ChatRequest; Headers: ChatHeaders }>,
+  req: FastifyRequest<{ Body: ChatRequestBody; Headers: ChatHeaders }>,
   reply: FastifyReply,
 ): Promise<FastifyReply> {
   let trace: LangfuseTraceLike | null = null;
@@ -261,7 +410,6 @@ export async function handleChat(
     const thread_id = asString(body.thread_id, "") || crypto.randomUUID();
     const user_id = body.user_id ?? null;
     const user_email = body.user_email ?? null;
-
     const prefer = normalizePrefer(body.prefer);
     const mode = normalizeMode(body.mode);
 
@@ -269,136 +417,86 @@ export async function handleChat(
       ? String(req.headers["x-allow-actions"])
       : null;
 
-    const allow_actions = config.actions.requireHeader
-      ? Boolean(body.allow_actions) && allowActionsHeader === "1"
-      : Boolean(body.allow_actions);
+    const allow_actions = Boolean(body.allow_actions) || allowActionsHeader === "1";
 
     trace = langfuse
       ? (langfuse.trace({
           name: "NOVA_Decision_Matrix",
           sessionId: thread_id,
           userId: user_id || "anonymous",
-          metadata: { project_id, mode, allow_actions },
+          metadata: { project_id, mode, allow_actions, prefer },
         }) as unknown as LangfuseTraceLike)
       : null;
 
     await ensureThread({ project_id, thread_id });
     await appendMessage(project_id, thread_id, "user", message);
 
-    const history = (await loadThread(project_id, thread_id, 30)) as Array<{
-      role: string;
-      content: string;
-    }>;
-
-    const historyMessages: ChatMessage[] = history
-      .filter((m) => m.role !== "system")
-      .map((m) => ({ role: toChatRole(m.role), content: m.content }));
-
-    const route = await chooseRoute({ project_id, message, prefer, mode });
+    const history = await loadThread(project_id, thread_id, 32);
+    const route = await routeIntent(message, prefer);
     const agi = pickAgi(route.intent, message);
-    const wantJson = allow_actions && config.actions.enabled;
 
-    const system = buildSystemPrompt({
+    const completionMessages = await buildMessages({
       agiPrompt: agi.system_prompt,
-      project_id,
-      thread_id,
-      user_email,
-      wantJson,
-    });
-
-    const messages: ChatMessage[] = [
-      { role: "system", content: system },
-      ...historyMessages,
-      { role: "user", content: message },
-    ];
-
-    const generation = trace?.generation({
-      name: `LLM_Compute_${route.provider}`,
-      model: route.model,
-      input: messages,
+      history: history.map((item) => ({
+        role: toChatRole(item.role),
+        content: item.content,
+      })),
+      userMessage: message,
+      context_data: body.context_data ?? null,
     });
 
     const completion = await runCompletionWithFallback({
-      project_id,
-      preferredProvider: route.provider,
+      provider: route.provider,
       mode,
-      messages,
-      jsonMode: wantJson,
+      messages: completionMessages,
+      jsonMode: false,
     });
 
-    generation?.end({
-      output: completion.text,
-      usage: completion.usage
-        ? {
-            promptTokens: completion.usage.tokens_in,
-            completionTokens: completion.usage.tokens_out,
-          }
-        : undefined,
-    });
+    let replyText = completion.text.trim() || "Silencio en la red.";
+    let plannedActions: Action[] = [];
+    let responseMeta: JsonObject = {
+      project_id,
+      thread_id,
+      provider_reason: route.reason,
+      agi_kind: agi.kind,
+      agi_level: agi.level,
+    };
 
-    if (completion.fallbackUsed) {
-      trace?.event({
-        name: "Provider_Fallback",
-        input: { requested: route.provider, used: completion.provider },
-      });
-    }
-
-    trace?.update({ tags: [route.intent, agi.id, completion.provider] });
-
-    let replyText = completion.text;
-    let actionsRaw: unknown[] = [];
-
-    if (wantJson) {
-      const obj = safeJsonParse(completion.text);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-        const record = obj as Record<string, unknown>;
-        if (typeof record.reply === "string") replyText = record.reply;
-        else if (typeof record.text === "string") replyText = record.text;
-        actionsRaw = Array.isArray(record.actions) ? record.actions : [];
-      }
+    const extracted = extractTextFromJsonReply(replyText);
+    if (extracted.reply || extracted.actions.length > 0 || Object.keys(extracted.meta).length > 0) {
+      if (extracted.reply) replyText = extracted.reply;
+      plannedActions = extracted.actions;
+      responseMeta = { ...responseMeta, ...extracted.meta };
     }
 
     const actionResult = await enqueueActions({
       project_id,
       allow_actions,
       allow_actions_header: allowActionsHeader,
-      actions: actionsRaw,
+      actions: plannedActions as any[],
     });
-
-    if (actionsRaw.length > 0) {
-      trace?.event({
-        name: "Actions_Dispatched",
-        input: { enqueued: actionResult.enqueued, blocked: actionResult.blocked },
-      });
-    }
 
     await appendMessage(project_id, thread_id, "assistant", replyText);
 
-    await recordUsage({
-      project_id,
-      thread_id,
-      provider: completion.provider,
-      model: completion.model,
-      tokens_in: completion.usage?.tokens_in,
-      tokens_out: completion.usage?.tokens_out,
-      meta: {
-        intent: route.intent,
-        agi_id: agi.id,
-        reason: route.reason,
-        requested_provider: route.provider,
-        used_provider: completion.provider,
-        title: titleFromMessage(message),
-        trace_id: trace?.id ?? null,
-      },
-      trace_id: trace?.id,
-    });
+    if (completion.usage) {
+      await recordUsage({
+        project_id,
+        thread_id,
+        provider: completion.provider as any,
+        model: completion.model,
+        tokens_in: completion.usage.tokens_in,
+        tokens_out: completion.usage.tokens_out,
+        meta: {
+          agi_id: agi.id,
+          intent: route.intent,
+          fallback_used: completion.fallbackUsed,
+        },
+        trace_id: trace?.id,
+      });
+    }
 
-    const responseMeta: JsonObject = {
-      router_reason: route.reason,
-      want_json: wantJson,
-      requested_provider: route.provider,
-      used_provider: completion.provider,
-    };
+    const monthlyTokens = await tokensUsedThisMonth(project_id, completion.provider as any);
+    responseMeta.monthly_tokens = monthlyTokens as unknown as JsonValue;
 
     if (completion.fallbackUsed) {
       responseMeta.provider_fallback = completion.provider;
@@ -457,25 +555,27 @@ export function buildNovaApp(opts?: { logger?: boolean }): FastifyInstance {
     ok: true,
     service: "nova.agi.orchestrator",
     fabric_ready: true,
-    hocker_one_api_url: config.hockerOneApiUrl,
+    hocker_one_api_url: process.env.HOCKER_ONE_API_URL ?? null,
     provider_ready:
       providerAvailable("openai") ||
       providerAvailable("gemini") ||
+      providerAvailable("anthropic") ||
       providerAvailable("ollama"),
     providers: {
       openai: providerAvailable("openai"),
       gemini: providerAvailable("gemini"),
+      anthropic: providerAvailable("anthropic"),
       ollama: providerAvailable("ollama"),
     },
     budgets: {
-      enabled: config.budgets.enabled,
-      openai_monthly_tokens: config.budgets.openaiMonthlyTokens,
-      gemini_monthly_tokens: config.budgets.geminiMonthlyTokens,
+      enabled: String(process.env.BUDGETS_ENABLED ?? "0").trim() === "1",
+      openai_monthly_tokens: Number(process.env.BUDGET_OPENAI_TOKENS ?? 250000),
+      gemini_monthly_tokens: Number(process.env.BUDGET_GEMINI_TOKENS ?? 250000),
     },
     actions: {
-      enabled: config.actions.enabled,
-      fallback_node_id: config.actions.fallbackNodeId,
-      default_node_id: config.actions.defaultNodeId,
+      enabled: String(process.env.ACTIONS_ENABLED ?? "0").trim() === "1",
+      fallback_node_id: process.env.FALLBACK_NODE_ID?.trim() ?? "hocker-fabric",
+      default_node_id: process.env.DEFAULT_NODE_ID?.trim() ?? "hocker-node-1",
     },
     ts: nowIso(),
   }));
@@ -485,3 +585,5 @@ export function buildNovaApp(opts?: { logger?: boolean }): FastifyInstance {
 
   return app;
 }
+
+export default buildNovaApp;
