@@ -7,10 +7,13 @@ type OllamaResponse = {
 };
 
 export async function ollamaRespond(args: {
+  baseUrl?: string;
   model: string;
   messages: ChatMessage[];
 }): Promise<{ text: string }> {
-  const res = await fetch("http://127.0.0.1:11434/api/chat", {
+  const baseUrl = (args.baseUrl ?? process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434").replace(/\/+$/, "");
+
+  const res = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
