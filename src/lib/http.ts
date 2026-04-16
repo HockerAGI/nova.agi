@@ -1,38 +1,41 @@
-import crypto from "node:crypto";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import { config } from "../config.js";
+import type { JsonObject } from "../types.js";
 
 export class HttpError extends Error {
-  status: number;
-  payload: any;
-
-  constructor(status: number, payload: any) {
-    super(typeof payload?.error === "string" ? payload.error : "HttpError");
-    this.status = status;
-    this.payload = payload ?? { ok: false, error: "Error" };
+  constructor(public readonly status: number, message: string, public readonly details?: string) {
+    super(message);
   }
 }
 
-/**
- * Valida que la petición tenga el token correcto de autorización.
- * Protege a NOVA AGI de accesos no autorizados.
- */
-export function requireAuth(header: string | undefined | null, expectedKey: string) {
-  if (!expectedKey || expectedKey.length < 16) {
-    throw new HttpError(500, {
-      ok: false,
-      error: "Configuración de servidor insegura (llave muy corta o ausente).",
-    });
-  }
+export function json(reply: FastifyReply, status: number, payload: unknown): FastifyReply {
+  return reply.code(status).header("cache-control", "no-store").send(payload);
+}
 
-  const auth = String(header || "").trim();
-  if (!auth) {
-    throw new HttpError(401, { ok: false, error: "No autorizado. Falta token." });
-  }
+export function requestId(req: FastifyRequest): string {
+  const rid = req.headers["x-request-id"];
+  return typeof rid === "string" && rid.trim() ? rid.trim() : cryptoRandomId();
+}
 
-  const token = auth.replace(/^Bearer\s+/i, "").trim();
-  const a = Buffer.from(token);
-  const b = Buffer.from(expectedKey);
+export function cryptoRandomId(): string {
+  return crypto.randomUUID();
+}
 
-  if (!a.length || !b.length || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    throw new HttpError(401, { ok: false, error: "No autorizado. Token inválido." });
+export function requireAuth(req: FastifyRequest): void {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) {
+    throw new HttpError(401, "Falta autorización Bearer.");
   }
+  const token = auth.slice(7).trim();
+  if (token !== config.orchestratorKey) {
+    throw new HttpError(403, "Token inválido.");
+  }
+}
+
+export async function readJsonBody<T extends JsonObject = JsonObject>(req: FastifyRequest): Promise<T> {
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "Body JSON inválido.");
+  }
+  return body as T;
 }
