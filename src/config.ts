@@ -1,33 +1,6 @@
-// nova.agi-main/src/config.ts
+import "dotenv/config";
 import { z } from "zod";
-
-export type Provider = "openai" | "gemini" | "anthropic" | "ollama";
-
-function readString(...names: string[]): string | undefined {
-  for (const name of names) {
-    const value = process.env[name];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-function readNumber(name: string, fallback: number): number {
-  const raw = readString(name);
-  if (!raw) return fallback;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function readBool(name: string, fallback = false): boolean {
-  const raw = readString(name);
-  if (!raw) return fallback;
-
-  const s = raw.toLowerCase();
-  if (["1", "true", "yes", "on"].includes(s)) return true;
-  if (["0", "false", "no", "off"].includes(s)) return false;
-
-  return fallback;
-}
+import type { Provider } from "./types.js";
 
 const Bool = z
   .string()
@@ -37,128 +10,117 @@ const Bool = z
     return s === "1" || s === "true" || s === "yes" || s === "on";
   });
 
+function read(name: string): string {
+  return (process.env[name] ?? "").trim();
+}
+
+function readOpt(name: string): string | undefined {
+  const v = read(name);
+  return v || undefined;
+}
+
+function readNum(name: string, fallback: number): number {
+  const v = Number(read(name));
+  return Number.isFinite(v) ? v : fallback;
+}
+
 const Schema = z.object({
   port: z.coerce.number().int().positive().default(8080),
+  nodeEnv: z.string().default("production"),
+
   orchestratorKey: z.string().min(16),
 
-  supabase: z.object({
-    url: z.string().url(),
-    serviceRoleKey: z.string().min(20),
-  }),
+  supabaseUrl: z.string().url(),
+  supabaseServiceRoleKey: z.string().min(20),
+
+  hockerOneApiUrl: z.string().url().optional().default(""),
 
   commandHmacSecret: z.string().min(24),
-  hockerOneApiUrl: z.string().url().optional().default(""),
 
   openai: z.object({
     apiKey: z.string().optional(),
     modelBase: z.string().default("gpt-4o"),
-    modelFast: z.string().optional().default("gpt-4o-mini"),
-    modelPro: z.string().optional().default("gpt-4.1"),
+    modelFast: z.string().default("gpt-4o-mini"),
+    modelPro: z.string().default("gpt-4.1")
   }),
-
   gemini: z.object({
     apiKey: z.string().optional(),
     modelBase: z.string().default("gemini-2.0-flash"),
-    modelFast: z.string().optional().default("gemini-2.0-flash-lite"),
-    modelPro: z.string().optional().default("gemini-2.5-pro"),
+    modelFast: z.string().default("gemini-2.0-flash-lite"),
+    modelPro: z.string().default("gemini-2.5-pro")
   }),
-
   anthropic: z.object({
     apiKey: z.string().optional(),
     modelBase: z.string().default("claude-sonnet-4-5"),
-    modelFast: z.string().optional().default("claude-haiku-4-5"),
-    modelPro: z.string().optional().default("claude-opus-4-5"),
+    modelFast: z.string().default("claude-haiku-4-5"),
+    modelPro: z.string().default("claude-opus-4-5")
   }),
-
   ollama: z.object({
     enabled: Bool.default(true),
-    baseUrl: z.string().url().optional().default("http://127.0.0.1:11434"),
+    baseUrl: z.string().url().default("http://127.0.0.1:11434"),
     modelBase: z.string().default("llama3:8b"),
-    modelFast: z.string().optional().default("llama3:8b"),
-    modelPro: z.string().optional().default("llama3.1:70b"),
+    modelFast: z.string().default("llama3:8b"),
+    modelPro: z.string().default("llama3.1:70b")
   }),
 
-  langfuse: z.object({
-    publicKey: z.string().optional(),
-    secretKey: z.string().optional(),
-    baseUrl: z.string().url().optional().default("https://cloud.langfuse.com"),
-  }),
+  budgetsEnabled: Bool.default(false),
+  budgetOpenAI: z.coerce.number().int().nonnegative().default(250000),
+  budgetGemini: z.coerce.number().int().nonnegative().default(250000),
+  budgetAnthropic: z.coerce.number().int().nonnegative().default(250000),
 
-  budgets: z.object({
-    enabled: Bool.default(false),
-    openaiMonthlyTokens: z.number().int().nonnegative().default(250000),
-    geminiMonthlyTokens: z.number().int().nonnegative().default(250000),
-    anthropicMonthlyTokens: z.number().int().nonnegative().default(250000),
-  }),
+  actionsEnabled: Bool.default(true),
+  actionsNeedApproval: Bool.default(true),
+  defaultNodeId: z.string().default("hocker-node-1"),
+  fallbackNodeId: z.string().default("hocker-fabric"),
+  requireActionHeader: Bool.default(false),
 
-  actions: z.object({
-    enabled: Bool.default(false),
-    defaultNeedsApproval: Bool.default(false),
-    defaultNodeId: z.string().default("hocker-node-1"),
-    fallbackNodeId: z.string().default("hocker-fabric"),
-    requireHeader: Bool.default(false),
-  }),
+  requestTimeoutMs: z.coerce.number().int().positive().default(45000)
 });
 
 const raw = {
-  port: readNumber("PORT", 8080),
-  orchestratorKey: readString("NOVA_ORCHESTRATOR_KEY") ?? "",
-  supabase: {
-    url: readString("SUPABASE_URL") ?? "",
-    serviceRoleKey: readString("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-  },
-  commandHmacSecret: readString("NOVA_COMMAND_HMAC_SECRET") ?? "",
-  hockerOneApiUrl: readString("HOCKER_ONE_API_URL") ?? "",
+  port: readNum("PORT", 8080),
+  nodeEnv: read("NODE_ENV") || "production",
+  orchestratorKey: read("NOVA_ORCHESTRATOR_KEY"),
+  supabaseUrl: read("SUPABASE_URL"),
+  supabaseServiceRoleKey: read("SUPABASE_SERVICE_ROLE_KEY"),
+  hockerOneApiUrl: readOpt("HOCKER_ONE_API_URL") ?? "",
+  commandHmacSecret: read("NOVA_COMMAND_HMAC_SECRET"),
 
   openai: {
-    apiKey: readString("OPENAI_API_KEY"),
-    modelBase: readString("OPENAI_MODEL") ?? "gpt-4o",
-    modelFast: readString("OPENAI_MODEL_FAST") ?? "gpt-4o-mini",
-    modelPro: readString("OPENAI_MODEL_PRO") ?? "gpt-4.1",
+    apiKey: readOpt("OPENAI_API_KEY"),
+    modelBase: read("OPENAI_MODEL") || "gpt-4o",
+    modelFast: read("OPENAI_MODEL_FAST") || "gpt-4o-mini",
+    modelPro: read("OPENAI_MODEL_PRO") || "gpt-4.1"
   },
-
   gemini: {
-    apiKey: readString("GEMINI_API_KEY"),
-    modelBase: readString("GEMINI_MODEL") ?? "gemini-2.0-flash",
-    modelFast: readString("GEMINI_MODEL_FAST") ?? "gemini-2.0-flash-lite",
-    modelPro: readString("GEMINI_MODEL_PRO") ?? "gemini-2.5-pro",
+    apiKey: readOpt("GEMINI_API_KEY"),
+    modelBase: read("GEMINI_MODEL") || "gemini-2.0-flash",
+    modelFast: read("GEMINI_MODEL_FAST") || "gemini-2.0-flash-lite",
+    modelPro: read("GEMINI_MODEL_PRO") || "gemini-2.5-pro"
   },
-
   anthropic: {
-    apiKey: readString("ANTHROPIC_API_KEY"),
-    modelBase: readString("ANTHROPIC_MODEL") ?? "claude-sonnet-4-5",
-    modelFast: readString("ANTHROPIC_MODEL_FAST") ?? "claude-haiku-4-5",
-    modelPro: readString("ANTHROPIC_MODEL_PRO") ?? "claude-opus-4-5",
+    apiKey: readOpt("ANTHROPIC_API_KEY"),
+    modelBase: read("ANTHROPIC_MODEL") || "claude-sonnet-4-5",
+    modelFast: read("ANTHROPIC_MODEL_FAST") || "claude-haiku-4-5",
+    modelPro: read("ANTHROPIC_MODEL_PRO") || "claude-opus-4-5"
   },
-
   ollama: {
-    enabled: readBool("OLLAMA_ENABLED", true),
-    baseUrl: readString("OLLAMA_BASE_URL") ?? "http://127.0.0.1:11434",
-    modelBase: readString("OLLAMA_MODEL") ?? "llama3:8b",
-    modelFast: readString("OLLAMA_MODEL_FAST") ?? "llama3:8b",
-    modelPro: readString("OLLAMA_MODEL_PRO") ?? "llama3.1:70b",
+    enabled: Bool.parse(read("OLLAMA_ENABLED") || "true"),
+    baseUrl: read("OLLAMA_BASE_URL") || "http://127.0.0.1:11434",
+    modelBase: read("OLLAMA_MODEL") || "llama3:8b",
+    modelFast: read("OLLAMA_MODEL_FAST") || "llama3:8b",
+    modelPro: read("OLLAMA_MODEL_PRO") || "llama3.1:70b"
   },
-
-  langfuse: {
-    publicKey: readString("LANGFUSE_PUBLIC_KEY"),
-    secretKey: readString("LANGFUSE_SECRET_KEY"),
-    baseUrl: readString("LANGFUSE_BASE_URL") ?? "https://cloud.langfuse.com",
-  },
-
-  budgets: {
-    enabled: readBool("BUDGETS_ENABLED", false),
-    openaiMonthlyTokens: readNumber("BUDGET_OPENAI_TOKENS", 250000),
-    geminiMonthlyTokens: readNumber("BUDGET_GEMINI_TOKENS", 250000),
-    anthropicMonthlyTokens: readNumber("BUDGET_ANTHROPIC_TOKENS", 250000),
-  },
-
-  actions: {
-    enabled: readBool("ACTIONS_ENABLED", false),
-    defaultNeedsApproval: readBool("ACTIONS_NEED_APPROVAL", false),
-    defaultNodeId: readString("DEFAULT_NODE_ID") ?? "hocker-node-1",
-    fallbackNodeId: readString("FALLBACK_NODE_ID") ?? "hocker-fabric",
-    requireHeader: readBool("ACTIONS_REQUIRE_HEADER", false),
-  },
+  budgetsEnabled: Bool.parse(read("BUDGETS_ENABLED") || "false"),
+  budgetOpenAI: readNum("BUDGET_OPENAI_TOKENS", 250000),
+  budgetGemini: readNum("BUDGET_GEMINI_TOKENS", 250000),
+  budgetAnthropic: readNum("BUDGET_ANTHROPIC_TOKENS", 250000),
+  actionsEnabled: Bool.parse(read("ACTIONS_ENABLED") || "true"),
+  actionsNeedApproval: Bool.parse(read("ACTIONS_NEED_APPROVAL") || "true"),
+  defaultNodeId: read("DEFAULT_NODE_ID") || "hocker-node-1",
+  fallbackNodeId: read("FALLBACK_NODE_ID") || "hocker-fabric",
+  requireActionHeader: Bool.parse(read("ACTIONS_REQUIRE_HEADER") || "false"),
+  requestTimeoutMs: readNum("REQUEST_TIMEOUT_MS", 45000)
 };
 
 export const config = Schema.parse(raw);
@@ -171,25 +133,16 @@ export function providerReady(provider: Provider): boolean {
 }
 
 export function modelFor(provider: Provider, mode: "auto" | "fast" | "pro"): string {
-  if (provider === "openai") {
-    if (mode === "fast") return config.openai.modelFast || config.openai.modelBase;
-    if (mode === "pro") return config.openai.modelPro || config.openai.modelBase;
-    return config.openai.modelBase;
-  }
+  const map =
+    provider === "openai"
+      ? config.openai
+      : provider === "gemini"
+      ? config.gemini
+      : provider === "anthropic"
+      ? config.anthropic
+      : config.ollama;
 
-  if (provider === "gemini") {
-    if (mode === "fast") return config.gemini.modelFast || config.gemini.modelBase;
-    if (mode === "pro") return config.gemini.modelPro || config.gemini.modelBase;
-    return config.gemini.modelBase;
-  }
-
-  if (provider === "anthropic") {
-    if (mode === "fast") return config.anthropic.modelFast || config.anthropic.modelBase;
-    if (mode === "pro") return config.anthropic.modelPro || config.anthropic.modelBase;
-    return config.anthropic.modelBase;
-  }
-
-  if (mode === "fast") return config.ollama.modelFast || config.ollama.modelBase;
-  if (mode === "pro") return config.ollama.modelPro || config.ollama.modelBase;
-  return config.ollama.modelBase;
+  if (mode === "fast") return map.modelFast || map.modelBase;
+  if (mode === "pro") return map.modelPro || map.modelBase;
+  return map.modelBase;
 }
