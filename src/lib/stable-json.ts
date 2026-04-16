@@ -1,29 +1,15 @@
-/**
- * Intenta extraer y parsear un JSON válido incluso si el LLM
- * lo envuelve en bloques de código markdown.
- */
-export function parseStableJson(text: string): any {
-  if (!text) return null;
-  
-  let clean = text.trim();
-  
-  // Quitar bloques de markdown si la IA los incluyó
-  if (clean.startsWith("```json")) {
-    clean = clean.replace(/^```json/, "");
-  } else if (clean.startsWith("```")) {
-    clean = clean.replace(/^```/, "");
-  }
-  
-  if (clean.endsWith("```")) {
-    clean = clean.replace(/```$/, "");
-  }
-  
-  clean = clean.trim();
-  
-  try {
-    return JSON.parse(clean);
-  } catch (e) {
-    console.error("Fallo al parsear JSON estable:", e);
-    return null;
-  }
+export function stableJson(value: unknown): string {
+  const walk = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(walk);
+    if (input && typeof input === "object") {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(input as Record<string, unknown>).sort()) {
+        out[key] = walk((input as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return input;
+  };
+
+  return JSON.stringify(walk(value ?? {}));
 }
