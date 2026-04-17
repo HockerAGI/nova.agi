@@ -1,66 +1,36 @@
-import { config, modelFor } from "../config.js";
-import { decideIntent } from "./decide.js";
-import type { Intent, Prefer, Provider } from "../types.js";
+import { config, modelFor, providerReady } from "../config.js";
+import type { CompletionMode, Provider } from "../types.js";
 
-export type RouteResult = {
-  intent: Intent;
-  provider: Provider;
-  model: string;
-  reason: string;
-};
-
-type ChooseOpts = {
-  project_id: string;
-  message: string;
-  prefer: Prefer;
-  mode: string;
-};
-
-function providerAvailable(provider: Provider): boolean {
-  if (provider === "ollama") return Boolean(config.ollama.enabled);
-  return Boolean(
-    provider === "openai"
-      ? config.openai.apiKey
-      : provider === "gemini"
-        ? config.gemini.apiKey
-        : config.anthropic.apiKey,
-  );
+export function resolveProvider(prefer: string | undefined, fallback: Provider): Provider {
+  const p = String(prefer ?? "").toLowerCase();
+  if (p === "openai" || p === "gemini" || p === "anthropic" || p === "ollama") {
+    return p;
+  }
+  return fallback;
 }
 
-function firstAvailable(preferred: Provider[]): Provider {
-  for (const provider of preferred) {
-    if (providerAvailable(provider)) return provider;
-  }
-  return "ollama";
+export function resolveMode(mode: string | undefined, fallback: CompletionMode): CompletionMode {
+  const m = String(mode ?? "").toLowerCase();
+  if (m === "fast" || m === "pro" || m === "auto") return m;
+  return fallback;
 }
 
-export async function chooseRoute(opts: ChooseOpts): Promise<RouteResult> {
-  const { message, prefer, mode } = opts;
-  const safeMode = (["auto", "fast", "pro"].includes(String(mode ?? "auto")) ? String(mode ?? "auto") : "auto") as
-    | "auto"
-    | "fast"
-    | "pro";
-
-  const decision = await decideIntent(message, prefer);
-
-  let provider: Provider;
-
-  if (prefer !== "auto") {
-    provider = providerAvailable(prefer) ? prefer : firstAvailable(["anthropic", "openai", "gemini", "ollama"]);
-  } else if (decision.intent === "code" || decision.intent === "ops" || decision.intent === "research") {
-    provider = firstAvailable(["anthropic", "openai", "gemini", "ollama"]);
-  } else if (decision.intent === "social") {
-    provider = firstAvailable(["gemini", "anthropic", "openai", "ollama"]);
-  } else if (decision.intent === "finance") {
-    provider = firstAvailable(["anthropic", "openai", "gemini", "ollama"]);
-  } else {
-    provider = firstAvailable(["anthropic", "gemini", "openai", "ollama"]);
-  }
+export function chooseRuntime(prefer: string | undefined, defaultProvider: Provider, defaultMode: CompletionMode) {
+  const provider = resolveProvider(prefer, defaultProvider);
+  const mode = resolveMode(prefer, defaultMode);
+  const ready = providerReady(provider);
 
   return {
-    intent: decision.intent,
-    provider,
-    model: modelFor(provider, safeMode),
-    reason: decision.reason,
+    provider: ready ? provider : "ollama",
+    mode,
+    model: modelFor(ready ? provider : "ollama", mode)
   };
+}
+
+export function budgetCap(provider: Provider): number {
+  if (!config.budgetsEnabled) return Number.POSITIVE_INFINITY;
+  if (provider === "openai") return config.budgetOpenAI;
+  if (provider === "gemini") return config.budgetGemini;
+  if (provider === "anthropic") return config.budgetAnthropic;
+  return Number.POSITIVE_INFINITY;
 }
