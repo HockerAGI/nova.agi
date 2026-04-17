@@ -1,38 +1,36 @@
-import type { ChatMessage } from "../types.js";
-
-type OllamaResponse = {
-  message?: {
-    content?: string;
-  };
-};
+import type { ChatMessage, CompletionResult } from "../types.js";
 
 export async function ollamaRespond(args: {
-  baseUrl?: string;
+  baseUrl: string;
   model: string;
   messages: ChatMessage[];
-}): Promise<{ text: string }> {
-  const baseUrl = (args.baseUrl ?? process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434").replace(/\/+$/, "");
+  timeoutMs: number;
+}): Promise<CompletionResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), args.timeoutMs);
 
-  const res = await fetch(`${baseUrl}/api/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
+  try {
+    const res = await fetch(`${args.baseUrl.replace(/\/$/, "")}/api/chat`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: args.model,
+        messages: args.messages,
+        stream: false
+      })
+    });
+
+    const json = (await res.json()) as { message?: { content?: string }; error?: string };
+    if (!res.ok) throw new Error(json.error || `Ollama HTTP ${res.status}`);
+
+    return {
+      provider: "ollama",
       model: args.model,
-      messages: args.messages,
-      stream: false,
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Ollama error: ${text}`);
+      text: json.message?.content?.trim() || "",
+      fallbackUsed: false
+    };
+  } finally {
+    clearTimeout(timer);
   }
-
-  const data = (await res.json()) as OllamaResponse;
-
-  return {
-    text: data.message?.content || "",
-  };
 }
