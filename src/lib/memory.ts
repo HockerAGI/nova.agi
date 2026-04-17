@@ -1,91 +1,80 @@
-import crypto from "node:crypto";
-import { sb } from "./supabase.js";
-import type { ChatRole } from "../types.js";
+import { randomUUID } from "node:crypto";
+import type { AdminSupabase } from "./supabase.js";
+import type { JsonObject, MemoryMessage, MemoryThread, Role } from "../types.js";
 
-export function toChatRole(r: string): ChatRole {
-  const s = String(r || "").trim().toLowerCase();
-  if (s === "system" || s === "user" || s === "assistant") return s as ChatRole;
-  return "assistant";
-}
-
-export async function ensureThread(opts: { project_id: string; thread_id: string }) {
-  const thread_id = String(opts.thread_id || "").trim();
-
-  if (!thread_id) {
-    throw new Error("thread_id requerido");
-  }
-
-  // 🔍 Buscar por thread_id REAL (no id)
-  const { data, error } = await sb
-    .from("nova_threads")
-    .select("id")
-    .eq("project_id", opts.project_id)
-    .eq("thread_id", thread_id)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  // 🚀 Crear si no existe
-  if (!data?.id) {
-    const { error: insertErr } = await sb.from("nova_threads").insert({
-      id: crypto.randomUUID(),           // PK interna
-      project_id: opts.project_id,
-      thread_id: thread_id,              // 🔥 CAMPO REAL
-      created_at: new Date().toISOString(),
-    });
-
-    if (insertErr) {
-      throw new Error(`ensureThread failed: ${insertErr.message}`);
-    }
-  }
-}
-
-export async function loadThread(
+export async function ensureThread(
+  sb: AdminSupabase,
   project_id: string,
-  thread_id: string,
-  limit = 40
-) {
+  thread_id: string | null | undefined,
+  user_id: string | null | undefined,
+  title?: string,
+): Promise<MemoryThread> {
+  const now = new Date().toISOString();
+  const id = thread_id?.trim() || randomUUID();
+
   const { data, error } = await sb
-    .from("nova_messages")
-    .select("id, role, content, created_at")
-    .eq("project_id", project_id)
-    .eq("thread_id", thread_id)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+    .from("threads")
+    .upsert(
+      {
+        id,
+        project_id,
+        user_id: user_id ?? null,
+        title: title ?? null,
+        summary: null,
+        meta: {},
+        created_at: now,
+        updated_at: now
+      },
+      { onConflict: "id" }
+    )
+    .select("*")
+    .single();
 
-  if (error || !data) return [];
-
-  return (data as {
-    id: string;
-    role: string;
-    content: string;
-    created_at: string;
-  }[]).reverse();
+  if (error || !data) throw new Error(error?.message || "No se pudo crear/leer el thread.");
+  return data as MemoryThread;
 }
 
 export async function appendMessage(
-  project_id: string,
+  sb: AdminSupabase,
   thread_id: string,
-  role: ChatRole,
-  content: string
-) {
-  const id = crypto.randomUUID();
+  project_id: string,
+  role: Role,
+  content: string,
+  meta: JsonObject = {},
+): Promise<MemoryMessage> {
+  const now = new Date().toISOString();
+  const { data, error } = await sb
+    .from("messages")
+    .insert({
+      id: randomUUID(),
+      thread_id,
+      project_id,
+      role,
+      content,
+      meta,
+      created_at: now
+    })
+    .select("*")
+    .single();
 
-  const { error } = await sb.from("nova_messages").insert({
-    id,
-    project_id,
-    thread_id,
-    role,
-    content,
-    created_at: new Date().toISOString(),
-  });
+  if (error || !data) throw new Error(error?.message || "No se pudo guardar el mensaje.");
+  return data as MemoryMessage;
+}
 
-  if (error) {
-    console.error("Memoria NOVA (DB) falló:", error.message);
-    return null;
-  }
+export async function loadThreadMessages(
+  sb: AdminSupabase,
+  thread_id: string,
+  project_id: string,
+  limit = 20,
+): Promise<MemoryMessage[]> {
+  const { data, error } = await sb
+    .from("messages")
+    .select("*")
+    .eq("thread_id", thread_id)
+    .eq("project_id", project_id)
+    .order("created_at", { ascending: true })
+    .limit(limit);
 
-  return id;
+  if (error) throw new Error(error.message);
+  return (data ?? []) as MemoryMessage[];
 }
