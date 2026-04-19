@@ -26,14 +26,33 @@ export type AgiKey =
   | "REVIA"
   | "SHADOWS";
 
-export interface AgiProfile {
-  id: AgiKey;
+export type AgiDefId =
+  | "nova"
+  | "syntia"
+  | "vertx"
+  | "numia"
+  | "hostia"
+  | "jurix"
+  | "curvewind"
+  | "candy"
+  | "pro_ia"
+  | "nova_ads"
+  | "chido_gerente"
+  | "chido_wins"
+  | "nexpa"
+  | "trackhok"
+  | "revia"
+  | "shadows";
+
+export interface AgiDef {
+  id: AgiDefId;
+  key: AgiKey;
   name: string;
-  role: string;
-  systemPrompt: string;
-  intents: Intent[];
-  defaultProvider: Provider;
-  defaultMode: CompletionMode;
+  kind: string;
+  level: number;
+  parent_id: AgiDefId | null;
+  tags: string[];
+  system_prompt: string;
 }
 
 export interface ChatMessage {
@@ -55,6 +74,13 @@ export interface ChatRequest {
   context_data?: JsonObject | null;
 }
 
+export interface ActionItem {
+  node_id?: string;
+  command: string;
+  payload?: JsonObject;
+  needs_approval?: boolean;
+}
+
 export interface ChatResult {
   ok: true;
   project_id: string;
@@ -69,13 +95,6 @@ export interface ChatResult {
   meta: JsonObject;
 }
 
-export interface ErrorResult {
-  ok: false;
-  error: string;
-  trace_id: string | null;
-  details?: string;
-}
-
 export interface CompletionResult {
   provider: Provider;
   model: string;
@@ -85,13 +104,6 @@ export interface CompletionResult {
     tokens_out?: number;
   };
   fallbackUsed: boolean;
-}
-
-export interface ActionItem {
-  node_id?: string;
-  command: string;
-  payload?: JsonObject;
-  needs_approval?: boolean;
 }
 
 export interface MemoryThread {
@@ -113,23 +125,6 @@ export interface MemoryMessage {
   content: string;
   meta: JsonObject;
   created_at: string;
-}
-
-export interface ActionRow {
-  id: string;
-  project_id: string;
-  thread_id: string | null;
-  node_id: string | null;
-  command: string;
-  payload: JsonObject;
-  status: "queued" | "needs_approval" | "approved" | "rejected" | "executed" | "failed";
-  needs_approval: boolean;
-  approved_by: string | null;
-  rejected_by: string | null;
-  result: JsonObject | null;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface ControlRow {
