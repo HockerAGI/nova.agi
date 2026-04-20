@@ -1,12 +1,14 @@
 export function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
 
   if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
+    const output: Record<string, unknown> = {};
     for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      out[key] = canonicalize((value as Record<string, unknown>)[key]);
+      output[key] = canonicalize((value as Record<string, unknown>)[key]);
     }
-    return out;
+    return output;
   }
 
   return value;
@@ -25,15 +27,20 @@ export function parseStableJson(input: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
-    const first = text.indexOf("{");
-    const last = text.lastIndexOf("}");
-    if (first >= 0 && last > first) {
-      try {
-        return JSON.parse(text.slice(first, last + 1));
-      } catch {
-        return text;
-      }
-    }
-    return text;
+    // sigue abajo
   }
+
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const candidate = text.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // sigue abajo
+    }
+  }
+
+  return null;
 }
