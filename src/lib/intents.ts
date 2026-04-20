@@ -1,23 +1,104 @@
 import type { Intent } from "../types.js";
 
+function includesAny(text: string, keywords: string[]): boolean {
+  return keywords.some((k) => text.includes(k));
+}
+
 export function detectIntent(msg: string): Intent {
   const m = msg.toLowerCase();
 
-  const codeHints = ["bug", "error", "ts", "typescript", "sql", "supabase", "docker", "cloud run", "rls", "api", "endpoint"];
-  if (codeHints.some((k) => m.includes(k))) return "code";
+  const codeHints = [
+    "bug",
+    "error",
+    "typescript",
+    "javascript",
+    "sql",
+    "supabase",
+    "docker",
+    "cloud run",
+    "rls",
+    "api",
+    "endpoint",
+    "repo",
+    "schema",
+    "backend",
+    "frontend",
+    "función",
+    "funcion",
+    "código",
+    "codigo",
+  ];
+  if (includesAny(m, codeHints)) return "code";
 
-  const opsHints = ["deploy", "infra", "server", "observabilidad", "logs", "seguridad", "audit", "backup"];
-  if (opsHints.some((k) => m.includes(k))) return "ops";
+  const opsHints = [
+    "deploy",
+    "infra",
+    "server",
+    "servidor",
+    "observabilidad",
+    "logs",
+    "seguridad",
+    "audit",
+    "backup",
+    "token",
+    "firma",
+    "hmac",
+    "nodo",
+    "cola",
+    "queue",
+  ];
+  if (includesAny(m, opsHints)) return "ops";
 
-  // --- ACTUALIZACIÓN: INTENCIONES AÑADIDAS (Finance & Social) ---
-  const financeHints = ["stripe", "cobro", "roi", "presupuesto", "finanzas", "pago", "mercadopago"];
-  if (financeHints.some((k) => m.includes(k))) return "finance";
+  const financeHints = [
+    "stripe",
+    "cobro",
+    "roi",
+    "presupuesto",
+    "finanzas",
+    "pago",
+    "mercadopago",
+    "factura",
+    "costos",
+    "costo",
+    "ingresos",
+    "ganancia",
+  ];
+  if (includesAny(m, financeHints)) return "finance";
 
-  const socialHints = ["whatsapp", "tiktok", "meta ads", "campaña", "crm", "leads", "ventas"];
-  if (socialHints.some((k) => m.includes(k))) return "social";
+  const socialHints = [
+    "whatsapp",
+    "tiktok",
+    "meta ads",
+    "campaña",
+    "campana",
+    "crm",
+    "leads",
+    "ventas",
+    "copy",
+    "contenido",
+    "anuncio",
+    "social media",
+  ];
+  if (includesAny(m, socialHints)) return "social";
 
-  const researchHints = ["investiga", "research", "compara", "benchmark", "tendencia", "mercado", "competencia", "probabilidad"];
-  if (researchHints.some((k) => m.includes(k))) return "research";
+  const researchHints = [
+    "investiga",
+    "research",
+    "compara",
+    "benchmark",
+    "tendencia",
+    "mercado",
+    "competencia",
+    "probabilidad",
+    "analiza",
+    "análisis",
+    "analisis",
+    "topología",
+    "topologia",
+    "arquitectura",
+    "estrategia",
+  ];
+  if (includesAny(m, researchHints)) return "research";
 
   return "general";
 }
