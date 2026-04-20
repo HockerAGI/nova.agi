@@ -12,21 +12,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export async function tokensUsedThisMonth(project_id: string, provider: Provider): Promise<number> {
+export async function tokensUsedThisMonth(
+  project_id: string,
+  provider: Provider,
+): Promise<number> {
   try {
-    const { data, error } = await sbAdmin()
+    const sb = sbAdmin();
+    const since = monthStartISO();
+
+    const { data, error } = await sb
       .from("llm_usage")
-      .select("tokens_in,tokens_out")
+      .select("tokens_in, tokens_out")
       .eq("project_id", project_id)
       .eq("provider", provider)
-      .gte("created_at", monthStartISO())
+      .gte("created_at", since)
       .limit(10000);
 
     if (error || !data) return 0;
 
-    return (data as Array<Record<string, unknown>>).reduce((sum, row) => {
-      return sum + Number(row.tokens_in ?? 0) + Number(row.tokens_out ?? 0);
-    }, 0);
+    let sum = 0;
+    for (const row of data as Array<Record<string, unknown>>) {
+      sum += Number(row.tokens_in ?? 0) + Number(row.tokens_out ?? 0);
+    }
+
+    return sum;
   } catch {
     return 0;
   }
@@ -43,14 +52,22 @@ export async function recordUsage(args: {
   trace_id?: string;
 }): Promise<void> {
   try {
+    const sb = sbAdmin();
+
     const metaData: JsonObject = {
       ...(isRecord(args.meta) ? (args.meta as JsonObject) : {}),
       trace_id: args.trace_id ?? null,
+      thread_id: args.thread_id ?? null
     };
 
-    await sbAdmin().from("llm_usage").insert({
+    /**
+     * Nota real:
+     * En el esquema actual vivo de hocker.one, llm_usage todavía NO trae thread_id.
+     * Por eso lo persistimos en meta para no romper inserts en runtime.
+     * Cuando la migración agregue llm_usage.thread_id, aquí se promueve a columna física.
+     */
+    await sb.from("llm_usage").insert({
       project_id: args.project_id,
-      thread_id: args.thread_id ?? null,
       provider: args.provider,
       model: args.model,
       tokens_in: args.tokens_in ?? null,
@@ -58,6 +75,6 @@ export async function recordUsage(args: {
       meta: metaData,
     });
   } catch {
-    // observabilidad no bloqueante
+    // no-op: observabilidad no debe tumbar el flujo principal
   }
 }
