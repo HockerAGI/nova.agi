@@ -3,75 +3,209 @@ import path from "node:path";
 import crypto from "node:crypto";
 import PDFDocument from "pdfkit";
 import { sbAdmin } from "./supabase.js";
-import { canonicalJson, sha256, buildExportSeal, utcTimestamp } from "./export-seal.js";
-import { createAuditFingerprint, verifyAuditChain } from "./audit-chain.js";
-import type { AuditExportType, AuditExportRow } from "./export-types.js";
 
-export async function collectAuditRows(project_id: string, limit = 500) {
-  const sb = sbAdmin();
-  const [{ data: chain }, { data: events }, { data: alerts }, { data: incidents }] = await Promise.all([
-    sb.from("audit_chain").select("*").eq("project_id", project_id).order("seq", { ascending: true }).limit(limit),
-    sb.from("events").select("*").eq("project_id", project_id).order("created_at", { ascending: false }).limit(limit),
-    sb.from("observability_alerts").select("*").eq("project_id", project_id).order("created_at", { ascending: false }).limit(limit),
-    sb.from("observability_incidents").select("*").eq("project_id", project_id).order("created_at", { ascending: false }).limit(limit)
-  ]);
+export type AuditExportType = "json" | "csv" | "pdf";
+
+export type AuditExportRow = {
+  id: string;
+  project_id: string;
+  export_type: AuditExportType;
+  file_name: string;
+  file_path: string;
+  content_hash: string;
+  chain_fingerprint: string | null;
+  seal_token: string | null;
+  seal_signature: string | null;
+  sealed_at: string;
+  created_by: string | null;
+  scope: Record<string, unknown> | null;
+};
+
+function utcTimestamp(): string {
+  return new Date().toISOString();
+}
+
+function sha256(input: string | Buffer): string {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = canonicalize((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+
+  return value;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value ?? {}));
+}
+
+function buildExportSeal(args: {
+  secret: string;
+  project_id: string;
+  export_type: AuditExportType;
+  content_hash: string;
+  chain_fingerprint: string;
+  file_name: string;
+  sealed_at: string;
+}) {
+  const base = [
+    args.project_id,
+    args.export_type,
+    args.content_hash,
+    args.chain_fingerprint,
+    args.file_name,
+    args.sealed_at,
+  ].join("|");
+
+  const seal_signature = args.secret
+    ? crypto.createHmac("sha256", args.secret).update(base).digest("hex")
+    : null;
+
+  const seal_token = Buffer.from(base, "utf8").toString("base64url");
 
   return {
-    chain: chain ?? [],
-    events: events ?? [],
-    alerts: alerts ?? [],
-    incidents: incidents ?? []
+    seal_token,
+    seal_signature,
+  };
+}
+
+async function safeSelect(
+  table: string,
+  project_id: string,
+  limit: number,
+  orderBy = "created_at",
+) {
+  try {
+    const { data, error } = await sbAdmin()
+      .from(table)
+      .select("*")
+      .eq("project_id", project_id)
+      .order(orderBy, { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      return { rows: [], available: false, error: error.message };
+    }
+
+    return { rows: data ?? [], available: true, error: null };
+  } catch (error) {
+    return {
+      rows: [],
+      available: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function collectAuditRows(project_id: string, limit = 500) {
+  const safeLimit = Math.min(Math.max(limit, 10), 5000);
+
+  const [events, auditLogs] = await Promise.all([
+    safeSelect("events", project_id, safeLimit),
+    safeSelect("audit_logs", project_id, safeLimit),
+  ]);
+
+  /**
+   * Estado real:
+   * Estas tablas no están provisionadas en la base actual viva.
+   * Se devuelven como no disponibles, no como “vacías mágicamente”.
+   */
+  const auditChain = await safeSelect("audit_chain", project_id, safeLimit, "seq");
+  const alerts = await safeSelect("observability_alerts", project_id, safeLimit);
+  const incidents = await safeSelect("observability_incidents", project_id, safeLimit);
+
+  return {
+    chain: auditChain.rows,
+    events: events.rows,
+    alerts: alerts.rows,
+    incidents: incidents.rows,
+    audit_logs: auditLogs.rows,
+    availability: {
+      audit_chain: auditChain.available,
+      events: events.available,
+      observability_alerts: alerts.available,
+      observability_incidents: incidents.available,
+      audit_logs: auditLogs.available,
+    },
+    errors: {
+      audit_chain: auditChain.error,
+      events: events.error,
+      observability_alerts: alerts.error,
+      observability_incidents: incidents.error,
+      audit_logs: auditLogs.error,
+    },
   };
 }
 
 function escapeCsvCell(value: unknown): string {
-  const s = value === null || value === undefined ? "" : typeof value === "string" ? value : JSON.stringify(value);
+  const s =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "string"
+        ? value
+        : JSON.stringify(value);
   return `"${s.replace(/"/g, '""')}"`;
 }
 
 export async function generateAuditCsv(project_id: string, limit = 500) {
   const data = await collectAuditRows(project_id, limit);
 
-  const rows = [
-    ["section","id","timestamp","type","detail","payload"].map(escapeCsvCell).join(","),
-    ...data.chain.map((r: any) => [
-      "audit_chain",
-      r.id,
-      r.created_at,
-      r.event_type,
-      `${r.action} | ${r.entity_type} | ${r.role} | ${r.actor_type}`,
-      canonicalJson(r.payload)
-    ].map(escapeCsvCell).join(",")),
-    ...data.events.map((r: any) => [
-      "events",
-      r.id,
-      r.created_at,
-      r.type,
-      `${r.level} | ${r.message}`,
-      canonicalJson(r.data ?? {})
-    ].map(escapeCsvCell).join(",")),
-    ...data.alerts.map((r: any) => [
-      "alerts",
-      r.id,
-      r.created_at,
-      `alert.${r.severity}`,
-      `${r.status} | ${r.title}`,
-      canonicalJson(r.data ?? {})
-    ].map(escapeCsvCell).join(",")),
-    ...data.incidents.map((r: any) => [
-      "incidents",
-      r.id,
-      r.created_at,
-      `incident.${r.severity}`,
-      `${r.status} | ${r.title}`,
-      canonicalJson({
-        summary: r.summary,
-        impact: r.impact,
-        root_cause: r.root_cause,
-        mitigation: r.mitigation
-      })
-    ].map(escapeCsvCell).join(","))
+  const rows: string[] = [
+    ["section", "id", "timestamp", "type", "detail", "payload"].map(escapeCsvCell).join(","),
   ];
+
+  for (const row of data.events as Array<Record<string, unknown>>) {
+    rows.push(
+      [
+        "events",
+        row.id,
+        row.created_at,
+        row.type,
+        `${row.level ?? "info"} | ${row.message ?? ""}`,
+        canonicalJson(row.data ?? {}),
+      ]
+        .map(escapeCsvCell)
+        .join(","),
+    );
+  }
+
+  for (const row of data.audit_logs as Array<Record<string, unknown>>) {
+    rows.push(
+      [
+        "audit_logs",
+        row.id,
+        row.created_at,
+        row.action,
+        `actor=${row.actor_user_id ?? "unknown"}`,
+        canonicalJson(row.context ?? {}),
+      ]
+        .map(escapeCsvCell)
+        .join(","),
+    );
+  }
+
+  if (!data.availability.audit_chain) {
+    rows.push(
+      [
+        "meta",
+        "audit_chain_unavailable",
+        utcTimestamp(),
+        "not_provisioned",
+        "audit_chain no disponible en este entorno",
+        canonicalJson({ error: data.errors.audit_chain }),
+      ]
+        .map(escapeCsvCell)
+        .join(","),
+    );
+  }
 
   return Buffer.from(rows.join("\n"), "utf8");
 }
@@ -82,6 +216,7 @@ export async function generateAuditPdf(project_id: string, limit = 250) {
   const chunks: Buffer[] = [];
 
   doc.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+
   const done = new Promise<Buffer>((resolve, reject) => {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
@@ -91,105 +226,10 @@ export async function generateAuditPdf(project_id: string, limit = 250) {
   doc.moveDown();
   doc.fontSize(10).text(`Project: ${project_id}`);
   doc.text(`Generated: ${utcTimestamp()}`);
-  doc.text(`Chain rows: ${data.chain.length}`);
   doc.text(`Events: ${data.events.length}`);
-  doc.text(`Alerts: ${data.alerts.length}`);
-  doc.text(`Incidents: ${data.incidents.length}`);
+  doc.text(`Audit logs: ${data.audit_logs.length}`);
+  doc.text(`Audit chain available: ${String(data.availability.audit_chain)}`);
+  doc.text(`Observability alerts available: ${String(data.availability.observability_alerts)}`);
+  doc.text(`Observability incidents available: ${String(data.availability.observability_incidents)}`);
 
-  doc.moveDown();
-  doc.fontSize(13).text("Audit chain", { underline: true });
-  for (const row of data.chain.slice(0, limit)) {
-    doc.moveDown(0.4);
-    doc.fontSize(9).text(`#${row.seq} ${row.action} | ${row.entity_type} | ${row.severity}`);
-    doc.text(`Hash: ${row.row_hash}`);
-    doc.text(`Prev: ${row.prev_hash || "GENESIS"}`);
-    doc.text(`Signature: ${row.signature}`);
-  }
-
-  doc.addPage();
-  doc.fontSize(13).text("Events", { underline: true });
-  for (const row of data.events.slice(0, limit)) {
-    doc.moveDown(0.4);
-    doc.fontSize(9).text(`${row.created_at} | ${row.type} | ${row.level}`);
-    doc.text(row.message);
-  }
-
-  doc.end();
-  return done;
-}
-
-export async function createCertifiedExport(args: {
-  project_id: string;
-  export_type: AuditExportType;
-  created_by?: string | null;
-  limit?: number;
-  scope?: Record<string, unknown>;
-}) {
-  const sb = sbAdmin();
-  const limit = Math.min(Math.max(args.limit ?? 500, 10), 5000);
-
-  const fingerprint = await createAuditFingerprint(args.project_id);
-  const verified = await verifyAuditChain(args.project_id, limit);
-
-  const sealed_at = utcTimestamp();
-  const fileNameBase = `jurix-${args.project_id}-${args.export_type}-${sealed_at.replace(/[:.]/g, "-")}`;
-  const fileName = `${fileNameBase}.${args.export_type === "csv" ? "csv" : args.export_type === "pdf" ? "pdf" : "json"}`;
-
-  let fileBuffer: Buffer;
-  if (args.export_type === "csv") {
-    fileBuffer = await generateAuditCsv(args.project_id, limit);
-  } else if (args.export_type === "pdf") {
-    fileBuffer = await generateAuditPdf(args.project_id, limit);
-  } else {
-    fileBuffer = Buffer.from(JSON.stringify({
-      project_id: args.project_id,
-      generated_at: sealed_at,
-      chain: verified,
-      fingerprint
-    }, null, 2), "utf8");
-  }
-
-  const content_hash = sha256(fileBuffer.toString("base64"));
-  const seal = buildExportSeal({
-    secret: process.env.NOVA_COMMAND_HMAC_SECRET ?? "",
-    project_id: args.project_id,
-    export_type: args.export_type,
-    content_hash,
-    chain_fingerprint: fingerprint.fingerprint,
-    file_name: fileName,
-    sealed_at
-  });
-
-  const dir = path.join(process.cwd(), "exports", args.project_id);
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, fileName);
-  fs.writeFileSync(filePath, fileBuffer);
-
-  const { data, error } = await sb
-    .from("audit_exports")
-    .insert({
-      project_id: args.project_id,
-      export_type: args.export_type,
-      scope: args.scope ?? { limit },
-      file_name: fileName,
-      file_path: filePath,
-      content_hash,
-      chain_fingerprint: fingerprint.fingerprint,
-      seal_token: seal.seal_token,
-      seal_signature: seal.seal_signature,
-      sealed_at,
-      expires_at: null,
-      created_by: args.created_by ?? null
-    })
-    .select("*")
-    .single();
-
-  if (error || !data) throw new Error(error?.message || "No se pudo registrar exportación.");
-
-  return {
-    export: data as AuditExportRow,
-    filePath,
-    fingerprint,
-    verified
-  };
-}
+  doc
