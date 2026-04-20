@@ -5,7 +5,7 @@ export type JsonObject = { [key: string]: JsonValue };
 export type Provider = "openai" | "gemini" | "anthropic" | "ollama";
 export type CompletionMode = "auto" | "fast" | "pro";
 export type Intent = "general" | "code" | "ops" | "research" | "finance" | "social";
-export type Role = "system" | "user" | "assistant" | "tool";
+export type Role = "system" | "user" | "assistant" | "tool" | "nova";
 export type Prefer = "auto" | Provider;
 
 export type AgiKey =
@@ -26,33 +26,24 @@ export type AgiKey =
   | "REVIA"
   | "SHADOWS";
 
-export type AgiDefId =
-  | "nova"
-  | "syntia"
-  | "vertx"
-  | "numia"
-  | "hostia"
-  | "jurix"
-  | "curvewind"
-  | "candy"
-  | "pro_ia"
-  | "nova_ads"
-  | "chido_gerente"
-  | "chido_wins"
-  | "nexpa"
-  | "trackhok"
-  | "revia"
-  | "shadows";
-
 export interface AgiDef {
-  id: AgiDefId;
-  key: AgiKey;
+  id: string;
   name: string;
   kind: string;
   level: number;
-  parent_id: AgiDefId | null;
+  parent_id: string | null;
   tags: string[];
   system_prompt: string;
+}
+
+export interface AgiProfile {
+  id: AgiKey | string;
+  name: string;
+  role: string;
+  systemPrompt: string;
+  intents: Intent[];
+  defaultProvider: Provider;
+  defaultMode: CompletionMode;
 }
 
 export interface ChatMessage {
@@ -88,11 +79,18 @@ export interface ChatResult {
   provider: Provider;
   model: string;
   intent: Intent;
-  agi_id: AgiKey;
+  agi_id: string;
   reply: string;
   actions: ActionItem[];
   trace_id: string | null;
   meta: JsonObject;
+}
+
+export interface ErrorResult {
+  ok: false;
+  error: string;
+  trace_id: string | null;
+  details?: string;
 }
 
 export interface CompletionResult {
@@ -100,8 +98,8 @@ export interface CompletionResult {
   model: string;
   text: string;
   usage?: {
-    tokens_in?: number;
-    tokens_out?: number;
+    tokens_in?: number | undefined;
+    tokens_out?: number | undefined;
   };
   fallbackUsed: boolean;
 }
@@ -111,10 +109,10 @@ export interface MemoryThread {
   project_id: string;
   user_id: string | null;
   title: string | null;
-  summary: string | null;
-  meta: JsonObject;
   created_at: string;
-  updated_at: string;
+  summary?: string | null;
+  meta?: JsonObject | null;
+  updated_at?: string;
 }
 
 export interface MemoryMessage {
@@ -123,8 +121,25 @@ export interface MemoryMessage {
   project_id: string;
   role: Role;
   content: string;
-  meta: JsonObject;
   created_at: string;
+  meta?: JsonObject | null;
+}
+
+export interface ActionRow {
+  id: string;
+  project_id: string;
+  thread_id: string | null;
+  node_id: string | null;
+  command: string;
+  payload: JsonObject;
+  status: "queued" | "needs_approval" | "approved" | "rejected" | "executed" | "failed";
+  needs_approval: boolean;
+  approved_by: string | null;
+  rejected_by: string | null;
+  result: JsonObject | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ControlRow {
