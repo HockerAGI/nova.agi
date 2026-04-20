@@ -1,8 +1,43 @@
+import { randomUUID } from "node:crypto";
 import type { AdminSupabase } from "./supabase.js";
 import type { JsonObject, MemoryMessage, MemoryThread, Role } from "../types.js";
 
-function asJsonObject(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
+function asJsonObject(value: unknown): JsonObject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as JsonObject;
+}
+
+function normalizeThread(row: Record<string, unknown>): MemoryThread {
+  return {
+    id: String(row.id),
+    project_id: String(row.project_id),
+    user_id: row.user_id ? String(row.user_id) : null,
+    title: row.title ? String(row.title) : null,
+    created_at: String(row.created_at),
+    summary: row.summary ? String(row.summary) : null,
+    meta: asJsonObject(row.meta),
+    updated_at: row.updated_at ? String(row.updated_at) : undefined,
+  };
+}
+
+function normalizeMessage(row: Record<string, unknown>): MemoryMessage {
+  const role = String(row.role ?? "assistant") as Role;
+  return {
+    id: String(row.id),
+    thread_id: String(row.thread_id),
+    project_id: String(row.project_id),
+    role,
+    content: String(row.content ?? ""),
+    created_at: String(row.created_at),
+    meta: asJsonObject(row.meta),
+  };
+}
+
+function dbRole(role: Role): "system" | "user" | "assistant" | "nova" {
+  if (role === "system") return "system";
+  if (role === "user") return "user";
+  if (role === "nova") return "nova";
+  return "assistant";
 }
 
 export async function ensureThread(
@@ -13,44 +48,28 @@ export async function ensureThread(
   title?: string,
 ): Promise<MemoryThread> {
   const now = new Date().toISOString();
-
-  if (thread_id) {
-    const { data: existing, error: existingErr } = await sb
-      .from("nova_threads")
-      .select("*")
-      .eq("project_id", project_id)
-      .eq("id", thread_id)
-      .maybeSingle();
-
-    if (existingErr) throw new Error(existingErr.message);
-    if (existing) {
-      return {
-        ...(existing as MemoryThread),
-        meta: asJsonObject((existing as MemoryThread).meta),
-      };
-    }
-  }
+  const id = thread_id?.trim() || randomUUID();
 
   const { data, error } = await sb
     .from("nova_threads")
-    .insert({
-      project_id,
-      user_id: user_id ?? null,
-      title: title ?? null,
-      summary: null,
-      meta: {},
-      created_at: now,
-      updated_at: now,
-    })
+    .upsert(
+      {
+        id,
+        project_id,
+        user_id: user_id ?? null,
+        title: title ?? null,
+        created_at: now,
+      },
+      { onConflict: "id" },
+    )
     .select("*")
     .single();
 
-  if (error || !data) throw new Error(error?.message || "No se pudo crear el thread.");
+  if (error || !data) {
+    throw new Error(error?.message || "No se pudo crear/leer el thread.");
+  }
 
-  return {
-    ...(data as MemoryThread),
-    meta: asJsonObject((data as MemoryThread).meta),
-  };
+  return normalizeThread(data as Record<string, unknown>);
 }
 
 export async function appendMessage(
@@ -59,39 +78,35 @@ export async function appendMessage(
   project_id: string,
   role: Role,
   content: string,
-  meta: JsonObject = {},
+  _meta: JsonObject = {},
 ): Promise<MemoryMessage> {
+  const now = new Date().toISOString();
+
   const { data, error } = await sb
     .from("nova_messages")
     .insert({
-      project_id,
+      id: randomUUID(),
       thread_id,
-      role,
+      project_id,
+      role: dbRole(role),
       content,
-      meta,
+      created_at: now,
     })
     .select("*")
     .single();
 
-  if (error || !data) throw new Error(error?.message || "No se pudo guardar el mensaje.");
+  if (error || !data) {
+    throw new Error(error?.message || "No se pudo guardar el mensaje.");
+  }
 
-  await sb
-    .from("nova_threads")
-    .update({ updated_at: new Date().toISOString() })
-    .eq("id", thread_id)
-    .eq("project_id", project_id);
-
-  return {
-    ...(data as MemoryMessage),
-    meta: asJsonObject((data as MemoryMessage).meta),
-  };
+  return normalizeMessage(data as Record<string, unknown>);
 }
 
 export async function loadThreadMessages(
   sb: AdminSupabase,
   thread_id: string,
   project_id: string,
-  limit = 24,
+  limit = 20,
 ): Promise<MemoryMessage[]> {
   const { data, error } = await sb
     .from("nova_messages")
@@ -101,10 +116,9 @@ export async function loadThreadMessages(
     .order("created_at", { ascending: true })
     .limit(limit);
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(error.message);
+  }
 
-  return (data ?? []).map((row) => ({
-    ...(row as MemoryMessage),
-    meta: asJsonObject((row as MemoryMessage).meta),
-  }));
+  return (data ?? []).map((row) => normalizeMessage(row as Record<string, unknown>));
 }
