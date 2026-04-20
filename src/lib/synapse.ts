@@ -1,12 +1,5 @@
 import { sbAdmin } from "./supabase.js";
-import { Langfuse } from "langfuse-node";
-import { config } from "../config.js";
-
-const langfuse = new Langfuse({
-  publicKey: config.langfuse.publicKey,
-  secretKey: config.langfuse.secretKey,
-  baseUrl: config.langfuse.baseUrl,
-});
+import { getLangfuseClient } from "./telemetry.js";
 
 export type SynapseEvent = {
   project_id: string;
@@ -14,7 +7,7 @@ export type SynapseEvent = {
   node_id?: string | null;
   severity?: "debug" | "info" | "warn" | "error" | "critical";
   message: string;
-  meta?: Record<string, any>;
+  meta?: Record<string, unknown>;
 };
 
 function toLevel(sev?: string): "info" | "warn" | "error" {
@@ -22,6 +15,12 @@ function toLevel(sev?: string): "info" | "warn" | "error" {
   if (s === "warn" || s === "warning") return "warn";
   if (s === "error" || s === "critical") return "error";
   return "info";
+}
+
+function toLangfuseLevel(level: "info" | "warn" | "error"): "DEFAULT" | "WARNING" | "ERROR" {
+  if (level === "error") return "ERROR";
+  if (level === "warn") return "WARNING";
+  return "DEFAULT";
 }
 
 export async function logEvent(e: SynapseEvent) {
@@ -38,14 +37,32 @@ export async function logEvent(e: SynapseEvent) {
     data,
   });
 
-  const trace = langfuse.trace({ name: `Synapse_${e.type}`, metadata: { project_id: e.project_id } });
-  trace.event({
-    name: e.message,
-    level: level === "error" ? "ERROR" : level === "warn" ? "WARNING" : "DEFAULT",
-    input: data,
-  });
+  const langfuse = getLangfuseClient();
 
-  await langfuse.flushAsync();
+  if (langfuse) {
+    try {
+      const trace = langfuse.trace({
+        name: `Synapse_${e.type}`,
+        metadata: {
+          project_id: e.project_id,
+          node_id: e.node_id ?? null,
+          severity: e.severity ?? "info",
+        },
+      });
 
-  if (error) throw new Error(error.message);
+      trace.event({
+        name: e.message,
+        level: toLangfuseLevel(level),
+        input: data,
+      });
+
+      await langfuse.flushAsync();
+    } catch (telemetryError) {
+      console.warn("Langfuse trace falló, pero el evento principal sigue vivo.", telemetryError);
+    }
+  }
+
+  if (error) {
+    throw new Error(error.message);
+  }
 }
