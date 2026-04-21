@@ -5,16 +5,20 @@ import { z } from "zod";
 
 import { config, modelFor, providerReady } from "./config.js";
 import type {
+  ActionItem,
   ChatMessage,
   ChatRequest,
   ChatResult,
   CompletionMode,
   Intent,
+  JsonObject,
   Provider,
 } from "./types.js";
 import { createAdminSupabase } from "./lib/supabase.js";
 import { ensureThread, appendMessage, loadThreadMessages } from "./lib/memory.js";
 import { pickAgi } from "./lib/agis.js";
+import { enqueueActions } from "./lib/actions.js";
+import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { openaiRespond } from "./providers/openai.js";
 import { geminiRespond } from "./providers/gemini.js";
 import { anthropicRespond } from "./providers/anthropic.js";
@@ -22,25 +26,28 @@ import { ollamaRespond } from "./providers/ollama.js";
 
 const supabaseAdmin = createAdminSupabase();
 
-const ChatSchema = z.object({
-  project_id: z.string().min(1).default("hocker-one"),
-  thread_id: z.string().uuid().nullable().optional(),
-  message: z.string().min(1).optional(),
-  text: z.string().min(1).optional(),
-  user_id: z.string().nullable().optional(),
-  user_email: z.string().email().nullable().optional(),
-  prefer: z.enum(["auto", "openai", "gemini", "anthropic", "ollama"]).default("auto"),
-  mode: z.enum(["auto", "fast", "pro"]).default("auto"),
-  allow_actions: z.boolean().default(false),
-}).superRefine((value, ctx) => {
-  if (!value.message && !value.text) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["message"],
-      message: "message o text es obligatorio.",
-    });
-  }
-});
+const ChatSchema = z
+  .object({
+    project_id: z.string().min(1).default("hocker-one"),
+    thread_id: z.string().uuid().nullable().optional(),
+    message: z.string().min(1).optional(),
+    text: z.string().min(1).optional(),
+    user_id: z.string().nullable().optional(),
+    user_email: z.string().email().nullable().optional(),
+    prefer: z.enum(["auto", "openai", "gemini", "anthropic", "ollama"]).default("auto"),
+    mode: z.enum(["auto", "fast", "pro"]).default("auto"),
+    allow_actions: z.boolean().default(false),
+    context_data: z.record(z.unknown()).nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.message && !value.text) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["message"],
+        message: "message o text es obligatorio.",
+      });
+    }
+  });
 
 function pickProvider(prefer: string | undefined): Provider {
   const p = String(prefer ?? "").toLowerCase();
@@ -101,17 +108,43 @@ function buildConversation(systemPrompt: string, history: ChatMessage[], userMes
   ];
 }
 
-function safeParseReply(text: string): { reply: string } {
+function asJsonObject(value: unknown): JsonObject {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : {};
+}
+
+function sanitizeAction(value: unknown): ActionItem | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.command !== "string" || !row.command.trim()) return null;
+
+  return {
+    node_id: typeof row.node_id === "string" && row.node_id.trim() ? row.node_id.trim() : undefined,
+    command: row.command.trim(),
+    payload: asJsonObject(row.payload),
+    needs_approval: Boolean(row.needs_approval),
+  };
+}
+
+function parseReplyEnvelope(text: string): { reply: string; actions: ActionItem[] } {
   const clean = String(text ?? "").trim();
-  if (!clean) return { reply: "Sin respuesta." };
+  if (!clean) return { reply: "Sin respuesta.", actions: [] };
 
   try {
     const parsed = JSON.parse(clean) as Record<string, unknown>;
-    if (typeof parsed.reply === "string" && parsed.reply.trim()) {
-      return { reply: parsed.reply.trim() };
-    }
+    const reply =
+      typeof parsed.reply === "string" && parsed.reply.trim()
+        ? parsed.reply.trim()
+        : clean;
+
+    const actions = Array.isArray(parsed.actions)
+      ? parsed.actions.map(sanitizeAction).filter((item): item is ActionItem => Boolean(item))
+      : [];
+
+    return { reply, actions };
   } catch {
-    // ignore
+    // sigue abajo
   }
 
   const first = clean.indexOf("{");
@@ -119,15 +152,22 @@ function safeParseReply(text: string): { reply: string } {
   if (first >= 0 && last > first) {
     try {
       const parsed = JSON.parse(clean.slice(first, last + 1)) as Record<string, unknown>;
-      if (typeof parsed.reply === "string" && parsed.reply.trim()) {
-        return { reply: parsed.reply.trim() };
-      }
+      const reply =
+        typeof parsed.reply === "string" && parsed.reply.trim()
+          ? parsed.reply.trim()
+          : clean;
+
+      const actions = Array.isArray(parsed.actions)
+        ? parsed.actions.map(sanitizeAction).filter((item): item is ActionItem => Boolean(item))
+        : [];
+
+      return { reply, actions };
     } catch {
       // ignore
     }
   }
 
-  return { reply: clean };
+  return { reply: clean, actions: [] };
 }
 
 async function complete(
@@ -172,7 +212,28 @@ async function complete(
   });
 }
 
-export async function handleChat(request: { body?: unknown }, reply: { status: (code: number) => { send: (payload: unknown) => unknown } }) {
+async function getControls(project_id: string): Promise<{ kill_switch: boolean; allow_write: boolean }> {
+  try {
+    const { data } = await supabaseAdmin
+      .from("system_controls")
+      .select("kill_switch,allow_write")
+      .eq("project_id", project_id)
+      .eq("id", "global")
+      .maybeSingle();
+
+    return {
+      kill_switch: Boolean((data as { kill_switch?: unknown } | null)?.kill_switch),
+      allow_write: Boolean((data as { allow_write?: unknown } | null)?.allow_write),
+    };
+  } catch {
+    return { kill_switch: false, allow_write: false };
+  }
+}
+
+export async function handleChat(
+  request: { body?: unknown },
+  reply: { status: (code: number) => { send: (payload: unknown) => unknown } },
+) {
   const parsed = ChatSchema.safeParse(request.body ?? {});
 
   if (!parsed.success) {
@@ -189,12 +250,22 @@ export async function handleChat(request: { body?: unknown }, reply: { status: (
     prefer: Provider | "auto";
     mode: CompletionMode;
     allow_actions: boolean;
+    context_data?: JsonObject | null;
   };
 
   const project_id = body.project_id.trim();
   const message = String(body.message ?? body.text ?? "").trim();
   const provider = pickProvider(body.prefer);
   const trace_id = randomUUID();
+  const controls = await getControls(project_id);
+
+  if (controls.kill_switch) {
+    return reply.status(423).send({
+      ok: false,
+      error: "Kill switch activo. Escritura e inferencia pausadas.",
+      trace_id,
+    });
+  }
 
   if (!providerReady(provider)) {
     return reply.status(503).send({
@@ -217,14 +288,23 @@ export async function handleChat(request: { body?: unknown }, reply: { status: (
 
   const history = await loadThreadMessages(supabaseAdmin, thread.id, project_id, 20);
 
-  await appendMessage(supabaseAdmin, thread.id, project_id, "user", message);
+  await appendMessage(supabaseAdmin, thread.id, project_id, "user", message, {
+    trace_id,
+    intent: intentDecision.intent,
+    agi_id: agi.id,
+    context_data: body.context_data ?? {},
+  });
+
+  const monthlyTokens = await tokensUsedThisMonth(project_id, provider);
 
   const systemPrompt = [
     agi.system_prompt,
     `Proyecto activo: ${project_id}.`,
     `Intención clasificada: ${intentDecision.intent}.`,
+    `Consumo mensual estimado para ${provider}: ${monthlyTokens} tokens.`,
     "Responde con claridad ejecutiva, criterio técnico y sin inventar estado del sistema.",
     "Si no tienes evidencia suficiente, dilo directo.",
+    "Si el usuario pide ejecución y allow_actions=true, puedes devolver JSON con reply y actions.",
   ].join("\n");
 
   const completion = await complete(
@@ -233,10 +313,50 @@ export async function handleChat(request: { body?: unknown }, reply: { status: (
     body.mode,
   );
 
-  const parsedReply = safeParseReply(completion.text);
+  const parsedReply = parseReplyEnvelope(completion.text);
   const replyText = parsedReply.reply || "Sin respuesta.";
 
-  await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", replyText);
+  let enqueuedActions: ActionItem[] = [];
+
+  if (body.allow_actions && controls.allow_write && parsedReply.actions.length > 0) {
+    const rows = await enqueueActions(supabaseAdmin, {
+      project_id,
+      thread_id: thread.id,
+      node_id: null,
+      actions: parsedReply.actions,
+      needsApproval: false,
+    });
+
+    enqueuedActions = rows.map((row) => ({
+      node_id: row.node_id ?? undefined,
+      command: row.command,
+      payload: row.payload,
+      needs_approval: row.needs_approval,
+    }));
+  }
+
+  await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", replyText, {
+    trace_id,
+    provider,
+    model: completion.model,
+    intent: intentDecision.intent,
+    agi_id: agi.id,
+    actions_enqueued: enqueuedActions.length,
+  });
+
+  await recordUsage({
+    project_id,
+    thread_id: thread.id,
+    provider,
+    model: completion.model,
+    tokens_in: completion.usage?.tokens_in,
+    tokens_out: completion.usage?.tokens_out,
+    trace_id,
+    meta: {
+      agi_id: agi.id,
+      intent: intentDecision.intent,
+    },
+  });
 
   const payload: ChatResult = {
     ok: true,
@@ -247,12 +367,16 @@ export async function handleChat(request: { body?: unknown }, reply: { status: (
     intent: intentDecision.intent,
     agi_id: agi.id,
     reply: replyText,
-    actions: [],
+    actions: enqueuedActions,
     trace_id,
     meta: {
       reason: intentDecision.reason,
-      allow_actions_requested: body.allow_actions,
-      actions_enqueued: 0,
+      controls: {
+        allow_write: controls.allow_write,
+        requested_actions: body.allow_actions,
+        enqueued_actions: enqueuedActions.length,
+      },
+      context_data: body.context_data ?? {},
     },
   };
 
