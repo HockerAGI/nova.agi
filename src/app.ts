@@ -273,4 +273,153 @@ export async function handleChat(
   if (!providerReady(provider)) {
     return reply.status(503).send({
       ok: false,
-      error: `No
+      error: `No hay proveedor disponible para "${provider}".`,
+      trace_id,
+    });
+  }
+
+  const intentDecision = detectIntent(message);
+  const agi = pickAgi(intentDecision.intent, message);
+
+  const thread = await ensureThread(
+    supabaseAdmin,
+    project_id,
+    body.thread_id ?? null,
+    body.user_id ?? null,
+    message.slice(0, 120),
+  );
+
+  const history = await loadThreadMessages(supabaseAdmin, thread.id, project_id, 20);
+
+  await appendMessage(supabaseAdmin, thread.id, project_id, "user", message, {
+    trace_id,
+    intent: intentDecision.intent,
+    agi_id: agi.id,
+    context_data: body.context_data ?? {},
+  });
+
+  const monthlyTokens = await tokensUsedThisMonth(project_id, provider);
+
+  const systemPrompt = [
+    agi.system_prompt,
+    `Proyecto activo: ${project_id}.`,
+    `Intención clasificada: ${intentDecision.intent}.`,
+    `Consumo mensual estimado para ${provider}: ${monthlyTokens} tokens.`,
+    "Responde con claridad ejecutiva, criterio técnico y sin inventar estado del sistema.",
+    "Si no tienes evidencia suficiente, dilo directo.",
+    "Si el usuario pide ejecución y allow_actions=true, puedes devolver JSON con reply y actions.",
+  ].join("\n");
+
+  const completion = await complete(
+    provider,
+    buildConversation(systemPrompt, history, message),
+    body.mode,
+  );
+
+  const parsedReply = parseReplyEnvelope(completion.text);
+  const replyText = parsedReply.reply || "Sin respuesta.";
+
+  let enqueuedActions: ActionItem[] = [];
+
+  if (body.allow_actions && controls.allow_write && parsedReply.actions.length > 0) {
+    const rows = await enqueueActions(supabaseAdmin, {
+      project_id,
+      thread_id: thread.id,
+      node_id: null,
+      actions: parsedReply.actions,
+      needsApproval: false,
+    });
+
+    enqueuedActions = rows.map((row) => ({
+      node_id: row.node_id ?? undefined,
+      command: row.command,
+      payload: row.payload,
+      needs_approval: row.needs_approval,
+    }));
+  }
+
+  await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", replyText, {
+    trace_id,
+    provider,
+    model: completion.model,
+    intent: intentDecision.intent,
+    agi_id: agi.id,
+    actions_enqueued: enqueuedActions.length,
+  });
+
+  await recordUsage({
+    project_id,
+    thread_id: thread.id,
+    provider,
+    model: completion.model,
+    tokens_in: completion.usage?.tokens_in,
+    tokens_out: completion.usage?.tokens_out,
+    trace_id,
+    meta: {
+      agi_id: agi.id,
+      intent: intentDecision.intent,
+    },
+  });
+
+  const payload: ChatResult = {
+    ok: true,
+    project_id,
+    thread_id: thread.id,
+    provider,
+    model: completion.model,
+    intent: intentDecision.intent,
+    agi_id: agi.id,
+    reply: replyText,
+    actions: enqueuedActions,
+    trace_id,
+    meta: {
+      reason: intentDecision.reason,
+      controls: {
+        allow_write: controls.allow_write,
+        requested_actions: body.allow_actions,
+        enqueued_actions: enqueuedActions.length,
+      },
+      context_data: body.context_data ?? {},
+    },
+  };
+
+  return reply.status(200).send(payload);
+}
+
+export function buildNovaApp() {
+  const app = Fastify({ logger: true });
+
+  void app.register(cors, {
+    origin: true,
+  });
+
+  app.addHook("preHandler", async (req, reply) => {
+    if (req.method === "GET" && req.url.startsWith("/health")) return;
+
+    if (!config.orchestratorKey) return;
+
+    const auth = req.headers.authorization;
+    if (!auth || auth !== `Bearer ${config.orchestratorKey}`) {
+      return reply.code(401).send({ ok: false, error: "Unauthorized" });
+    }
+  });
+
+  app.get("/health", async () => ({
+    ok: true,
+    service: "nova.agi",
+    ts: new Date().toISOString(),
+  }));
+
+  app.post("/chat", handleChat);
+  app.post("/api/chat", handleChat);
+  app.post("/api/v1/chat", handleChat);
+  app.post("/api/v1/nova/interact", handleChat);
+
+  return app;
+}
+
+export async function startServer() {
+  const app = buildNovaApp();
+  await app.listen({ port: config.port, host: "0.0.0.0" });
+  app.log.info(`[NOVA AGI] listening on ${config.port}`);
+}
