@@ -233,4 +233,44 @@ async function getControls(project_id: string): Promise<{ kill_switch: boolean; 
   }
 }
 
-export
+export async function handleChat(
+  request: { body?: unknown },
+  reply: { status: (code: number) => { send: (payload: unknown) => unknown } },
+) {
+  const parsed = ChatSchema.safeParse(request.body ?? {});
+
+  if (!parsed.success) {
+    return reply.status(400).send({
+      ok: false,
+      error: "Payload inválido.",
+      issues: parsed.error.flatten(),
+    });
+  }
+
+  const body = parsed.data as ChatRequest & {
+    project_id: string;
+    thread_id?: string | null;
+    prefer: Provider | "auto";
+    mode: CompletionMode;
+    allow_actions: boolean;
+    context_data?: JsonObject | null;
+  };
+
+  const project_id = body.project_id.trim();
+  const message = String(body.message ?? body.text ?? "").trim();
+  const provider = pickProvider(body.prefer);
+  const trace_id = randomUUID();
+  const controls = await getControls(project_id);
+
+  if (controls.kill_switch) {
+    return reply.status(423).send({
+      ok: false,
+      error: "Kill switch activo. Escritura e inferencia pausadas.",
+      trace_id,
+    });
+  }
+
+  if (!providerReady(provider)) {
+    return reply.status(503).send({
+      ok: false,
+      error: `No
