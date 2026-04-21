@@ -28,6 +28,7 @@ export type AgiKey =
 
 export interface AgiDef {
   id: string;
+  key: AgiKey;
   name: string;
   kind: string;
   level: number;
