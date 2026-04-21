@@ -65,15 +65,11 @@ function buildExportSeal(args: {
     args.sealed_at,
   ].join("|");
 
-  const seal_signature = args.secret
-    ? crypto.createHmac("sha256", args.secret).update(base).digest("hex")
-    : null;
-
-  const seal_token = Buffer.from(base, "utf8").toString("base64url");
-
   return {
-    seal_token,
-    seal_signature,
+    seal_token: Buffer.from(base, "utf8").toString("base64url"),
+    seal_signature: args.secret
+      ? crypto.createHmac("sha256", args.secret).update(base).digest("hex")
+      : null,
   };
 }
 
@@ -91,10 +87,7 @@ async function safeSelect(
       .order(orderBy, { ascending: false })
       .limit(limit);
 
-    if (error) {
-      return { rows: [], available: false, error: error.message };
-    }
-
+    if (error) return { rows: [], available: false, error: error.message };
     return { rows: data ?? [], available: true, error: null };
   } catch (error) {
     return {
@@ -113,11 +106,6 @@ export async function collectAuditRows(project_id: string, limit = 500) {
     safeSelect("audit_logs", project_id, safeLimit),
   ]);
 
-  /**
-   * Estado real:
-   * Estas tablas no están provisionadas en la base actual viva.
-   * Se devuelven como no disponibles, no como “vacías mágicamente”.
-   */
   const auditChain = await safeSelect("audit_chain", project_id, safeLimit, "seq");
   const alerts = await safeSelect("observability_alerts", project_id, safeLimit);
   const incidents = await safeSelect("observability_incidents", project_id, safeLimit);
@@ -152,6 +140,7 @@ function escapeCsvCell(value: unknown): string {
       : typeof value === "string"
         ? value
         : JSON.stringify(value);
+
   return `"${s.replace(/"/g, '""')}"`;
 }
 
@@ -232,4 +221,172 @@ export async function generateAuditPdf(project_id: string, limit = 250) {
   doc.text(`Observability alerts available: ${String(data.availability.observability_alerts)}`);
   doc.text(`Observability incidents available: ${String(data.availability.observability_incidents)}`);
 
-  doc
+  doc.moveDown();
+  doc.fontSize(13).text("Events", { underline: true });
+
+  for (const row of (data.events as Array<Record<string, unknown>>).slice(0, limit)) {
+    doc.moveDown(0.4);
+    doc.fontSize(9).text(`${row.created_at ?? ""} | ${row.type ?? ""} | ${row.level ?? ""}`);
+    doc.text(String(row.message ?? ""));
+  }
+
+  doc.addPage();
+  doc.fontSize(13).text("Audit logs", { underline: true });
+
+  for (const row of (data.audit_logs as Array<Record<string, unknown>>).slice(0, limit)) {
+    doc.moveDown(0.4);
+    doc.fontSize(9).text(`${row.created_at ?? ""} | ${row.action ?? ""}`);
+    doc.text(canonicalJson(row.context ?? {}));
+  }
+
+  if (!data.availability.audit_chain) {
+    doc.addPage();
+    doc.fontSize(13).text("Provisioning status", { underline: true });
+    doc.moveDown(0.5);
+    doc.fontSize(10).text("audit_chain no está provisionado en la base actual.");
+    doc.text(`Detalle: ${data.errors.audit_chain ?? "sin detalle"}`);
+  }
+
+  doc.end();
+  return done;
+}
+
+function lightweightFingerprint(data: {
+  events: unknown[];
+  audit_logs: unknown[];
+  chain: unknown[];
+}) {
+  const digest = sha256(
+    canonicalJson({
+      events: data.events,
+      audit_logs: data.audit_logs,
+      chain: data.chain,
+    }),
+  );
+
+  return {
+    fingerprint: digest,
+    mode: "lightweight" as const,
+  };
+}
+
+export async function createCertifiedExport(args: {
+  project_id: string;
+  export_type: AuditExportType;
+  created_by?: string | null;
+  limit?: number;
+  scope?: Record<string, unknown>;
+}) {
+  const limit = Math.min(Math.max(args.limit ?? 500, 10), 5000);
+  const sealed_at = utcTimestamp();
+
+  let fileBuffer: Buffer;
+
+  if (args.export_type === "csv") {
+    fileBuffer = await generateAuditCsv(args.project_id, limit);
+  } else if (args.export_type === "pdf") {
+    fileBuffer = await generateAuditPdf(args.project_id, Math.min(limit, 250));
+  } else {
+    const collected = await collectAuditRows(args.project_id, limit);
+    fileBuffer = Buffer.from(
+      JSON.stringify(
+        {
+          project_id: args.project_id,
+          generated_at: sealed_at,
+          collected,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
+  const collected = await collectAuditRows(args.project_id, Math.min(limit, 500));
+  const fingerprint = lightweightFingerprint(collected);
+  const content_hash = sha256(fileBuffer);
+
+  const fileNameBase = `jurix-${args.project_id}-${args.export_type}-${sealed_at.replace(/[:.]/g, "-")}`;
+  const fileName = `${fileNameBase}.${args.export_type === "csv" ? "csv" : args.export_type === "pdf" ? "pdf" : "json"}`;
+
+  const seal = buildExportSeal({
+    secret: String(
+      process.env.NOVA_COMMAND_HMAC_SECRET ??
+        process.env.HOCKER_COMMAND_HMAC_SECRET ??
+        process.env.COMMAND_HMAC_SECRET ??
+        "",
+    ).trim(),
+    project_id: args.project_id,
+    export_type: args.export_type,
+    content_hash,
+    chain_fingerprint: fingerprint.fingerprint,
+    file_name: fileName,
+    sealed_at,
+  });
+
+  const dir = path.join(process.cwd(), "exports", args.project_id);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, fileName);
+  fs.writeFileSync(filePath, fileBuffer);
+
+  try {
+    const { data, error } = await sbAdmin()
+      .from("audit_exports")
+      .insert({
+        project_id: args.project_id,
+        export_type: args.export_type,
+        scope: args.scope ?? { limit },
+        file_name: fileName,
+        file_path: filePath,
+        content_hash,
+        chain_fingerprint: fingerprint.fingerprint,
+        seal_token: seal.seal_token,
+        seal_signature: seal.seal_signature,
+        sealed_at,
+        expires_at: null,
+        created_by: args.created_by ?? null,
+      })
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      throw error ?? new Error("No se pudo registrar exportación.");
+    }
+
+    return {
+      export: data as AuditExportRow,
+      filePath,
+      fingerprint,
+      verified: {
+        ok: false,
+        mode: "lightweight",
+        note: "Registro guardado, verificación criptográfica completa aún no provisionada.",
+      },
+    };
+  } catch (error) {
+    return {
+      export: {
+        id: crypto.randomUUID(),
+        project_id: args.project_id,
+        export_type: args.export_type,
+        file_name: fileName,
+        file_path: filePath,
+        content_hash,
+        chain_fingerprint: fingerprint.fingerprint,
+        seal_token: seal.seal_token,
+        seal_signature: seal.seal_signature,
+        sealed_at,
+        created_by: args.created_by ?? null,
+        scope: args.scope ?? { limit },
+      } satisfies AuditExportRow,
+      filePath,
+      fingerprint,
+      verified: {
+        ok: false,
+        mode: "lightweight",
+        note: "Export local generado. audit_exports no está provisionado en este entorno.",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
