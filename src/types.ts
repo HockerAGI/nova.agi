@@ -55,22 +55,22 @@ export interface ChatMessage {
 
 export interface ChatRequest {
   project_id?: string;
-  thread_id?: string | null;
+  thread_id?: string | null | undefined;
   message?: string;
   text?: string;
-  user_id?: string | null;
-  user_email?: string | null;
+  user_id?: string | null | undefined;
+  user_email?: string | null | undefined;
   prefer?: string;
   mode?: string;
   allow_actions?: boolean;
-  context_data?: JsonObject | null;
+  context_data?: JsonObject | null | undefined;
 }
 
 export interface ActionItem {
-  node_id?: string;
+  node_id?: string | undefined;
   command: string;
-  payload?: JsonObject;
-  needs_approval?: boolean;
+  payload?: JsonObject | undefined;
+  needs_approval?: boolean | undefined;
 }
 
 export interface ChatResult {
@@ -111,9 +111,9 @@ export interface MemoryThread {
   user_id: string | null;
   title: string | null;
   created_at: string;
-  summary?: string | null;
-  meta?: JsonObject | null;
-  updated_at?: string;
+  summary?: string | null | undefined;
+  meta?: JsonObject | null | undefined;
+  updated_at?: string | undefined;
 }
 
 export interface MemoryMessage {
@@ -123,7 +123,7 @@ export interface MemoryMessage {
   role: Role;
   content: string;
   created_at: string;
-  meta?: JsonObject | null;
+  meta?: JsonObject | null | undefined;
 }
 
 export interface ActionRow {

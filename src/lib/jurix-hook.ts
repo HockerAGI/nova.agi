@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { JsonObject } from "../types.js";
 import { sbAdmin } from "./supabase.js";
 
 export async function auditCriticalAction(args: {
@@ -11,7 +12,7 @@ export async function auditCriticalAction(args: {
   role: string;
   action: string;
   severity?: "info" | "warn" | "error" | "critical";
-  payload?: Record<string, unknown>;
+  payload?: JsonObject;
 }) {
   const severity = args.severity ?? "info";
   const level: "info" | "warn" | "error" =
@@ -21,7 +22,7 @@ export async function auditCriticalAction(args: {
         ? "warn"
         : "info";
 
-  const context = {
+  const context: JsonObject = {
     event_type: args.event_type,
     entity_type: args.entity_type,
     entity_id: args.entity_id ?? null,

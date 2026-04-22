@@ -1,3 +1,4 @@
+import type { JsonObject } from "../types.js";
 import { sbAdmin } from "./supabase.js";
 import { getLangfuseClient } from "./telemetry.js";
 
@@ -7,7 +8,7 @@ export type SynapseEvent = {
   node_id?: string | null;
   severity?: "debug" | "info" | "warn" | "error" | "critical";
   message: string;
-  meta?: Record<string, unknown>;
+  meta?: JsonObject;
 };
 
 function toLevel(sev?: string): "info" | "warn" | "error" {
@@ -26,7 +27,7 @@ function toLangfuseLevel(level: "info" | "warn" | "error"): "DEFAULT" | "WARNING
 export async function logEvent(e: SynapseEvent) {
   const sb = sbAdmin();
   const level = toLevel(e.severity);
-  const data = e.meta && typeof e.meta === "object" ? e.meta : {};
+  const data: JsonObject = e.meta ?? {};
 
   const { error } = await sb.from("events").insert({
     project_id: e.project_id,

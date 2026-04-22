@@ -43,13 +43,13 @@ export async function tokensUsedThisMonth(
 
 export async function recordUsage(args: {
   project_id: string;
-  thread_id?: string;
+  thread_id?: string | undefined;
   provider: Provider;
   model: string;
-  tokens_in?: number;
-  tokens_out?: number;
-  meta?: JsonObject;
-  trace_id?: string;
+  tokens_in?: number | undefined;
+  tokens_out?: number | undefined;
+  meta?: JsonObject | undefined;
+  trace_id?: string | undefined;
 }): Promise<void> {
   try {
     const sb = sbAdmin();
@@ -57,15 +57,9 @@ export async function recordUsage(args: {
     const metaData: JsonObject = {
       ...(isRecord(args.meta) ? (args.meta as JsonObject) : {}),
       trace_id: args.trace_id ?? null,
-      thread_id: args.thread_id ?? null
+      thread_id: args.thread_id ?? null,
     };
 
-    /**
-     * Nota real:
-     * En el esquema actual vivo de hocker.one, llm_usage todavía NO trae thread_id.
-     * Por eso lo persistimos en meta para no romper inserts en runtime.
-     * Cuando la migración agregue llm_usage.thread_id, aquí se promueve a columna física.
-     */
     await sb.from("llm_usage").insert({
       project_id: args.project_id,
       provider: args.provider,
@@ -75,6 +69,6 @@ export async function recordUsage(args: {
       meta: metaData,
     });
   } catch {
-    // no-op: observabilidad no debe tumbar el flujo principal
+    // no-op
   }
 }

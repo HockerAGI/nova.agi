@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import PDFDocument from "pdfkit";
+import type { JsonObject } from "../types.js";
 import { sbAdmin } from "./supabase.js";
 
 export type AuditExportType = "json" | "csv" | "pdf";
@@ -18,7 +19,7 @@ export type AuditExportRow = {
   seal_signature: string | null;
   sealed_at: string;
   created_by: string | null;
-  scope: Record<string, unknown> | null;
+  scope: JsonObject | null;
 };
 
 function utcTimestamp(): string {
@@ -45,6 +46,13 @@ function canonicalize(value: unknown): unknown {
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value ?? {}));
+}
+
+function asJsonObject(value: unknown): JsonObject {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as JsonObject;
+  }
+  return {};
 }
 
 function buildExportSeal(args: {
@@ -275,7 +283,7 @@ export async function createCertifiedExport(args: {
   export_type: AuditExportType;
   created_by?: string | null;
   limit?: number;
-  scope?: Record<string, unknown>;
+  scope?: JsonObject;
 }) {
   const limit = Math.min(Math.max(args.limit ?? 500, 10), 5000);
   const sealed_at = utcTimestamp();
@@ -335,7 +343,7 @@ export async function createCertifiedExport(args: {
       .insert({
         project_id: args.project_id,
         export_type: args.export_type,
-        scope: args.scope ?? { limit },
+        scope: args.scope ?? asJsonObject({ limit }),
         file_name: fileName,
         file_path: filePath,
         content_hash,
@@ -377,7 +385,7 @@ export async function createCertifiedExport(args: {
         seal_signature: seal.seal_signature,
         sealed_at,
         created_by: args.created_by ?? null,
-        scope: args.scope ?? { limit },
+        scope: args.scope ?? asJsonObject({ limit }),
       } satisfies AuditExportRow,
       filePath,
       fingerprint,

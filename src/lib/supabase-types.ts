@@ -1,5 +1,7 @@
 import type { JsonObject } from "../types.js";
 
+type EmptySchemaObject = Record<string, never>;
+
 export type Database = {
   public: {
     Tables: {
@@ -22,6 +24,7 @@ export type Database = {
           meta: JsonObject | null;
           created_at: string;
         }>;
+        Relationships: [];
       };
 
       project_members: {
@@ -46,6 +49,7 @@ export type Database = {
           role: "owner" | "admin" | "operator" | "viewer";
           created_at: string;
         }>;
+        Relationships: [];
       };
 
       nodes: {
@@ -85,6 +89,7 @@ export type Database = {
           created_at: string;
           updated_at: string;
         }>;
+        Relationships: [];
       };
 
       system_controls: {
@@ -115,6 +120,7 @@ export type Database = {
           created_at: string;
           updated_at: string;
         }>;
+        Relationships: [];
       };
 
       commands: {
@@ -169,6 +175,7 @@ export type Database = {
           finished_at: string | null;
           approved_at: string | null;
         }>;
+        Relationships: [];
       };
 
       events: {
@@ -202,6 +209,7 @@ export type Database = {
           data: JsonObject | null;
           created_at: string;
         }>;
+        Relationships: [];
       };
 
       audit_logs: {
@@ -229,6 +237,7 @@ export type Database = {
           context: JsonObject | null;
           created_at: string;
         }>;
+        Relationships: [];
       };
 
       agis: {
@@ -259,6 +268,7 @@ export type Database = {
           meta: JsonObject | null;
           created_at: string;
         }>;
+        Relationships: [];
       };
 
       nova_threads: {
@@ -292,6 +302,7 @@ export type Database = {
           meta?: JsonObject | null;
           updated_at?: string;
         }>;
+        Relationships: [];
       };
 
       nova_messages: {
@@ -322,6 +333,7 @@ export type Database = {
           created_at: string;
           meta?: JsonObject | null;
         }>;
+        Relationships: [];
       };
 
       llm_usage: {
@@ -361,125 +373,65 @@ export type Database = {
           created_at: string;
           thread_id?: string | null;
         }>;
+        Relationships: [];
       };
 
-      /**
-       * Compat bridge: tablas legacy aún referenciadas por archivos viejos del repo.
-       * No son la fuente real actual, pero se mantienen tipadas para no romper compile.
-       */
-      threads: {
+      audit_exports: {
         Row: {
           id: string;
           project_id: string;
-          user_id: string | null;
-          title: string | null;
-          summary: string | null;
-          meta: JsonObject | null;
-          created_at: string;
-          updated_at: string;
-        };
-        Insert: {
-          id: string;
-          project_id: string;
-          user_id?: string | null;
-          title?: string | null;
-          summary?: string | null;
-          meta?: JsonObject | null;
-          created_at?: string;
-          updated_at?: string;
-        };
-        Update: Partial<{
-          id: string;
-          project_id: string;
-          user_id: string | null;
-          title: string | null;
-          summary: string | null;
-          meta: JsonObject | null;
-          created_at: string;
-          updated_at: string;
-        }>;
-      };
-
-      messages: {
-        Row: {
-          id: string;
-          thread_id: string;
-          project_id: string;
-          role: "system" | "user" | "assistant" | "tool";
-          content: string;
-          meta: JsonObject | null;
+          export_type: string;
+          scope: JsonObject | null;
+          file_name: string;
+          file_path: string;
+          content_hash: string;
+          chain_fingerprint: string | null;
+          seal_token: string | null;
+          seal_signature: string | null;
+          sealed_at: string;
+          expires_at: string | null;
+          created_by: string | null;
           created_at: string;
         };
         Insert: {
-          id: string;
-          thread_id: string;
+          id?: string;
           project_id: string;
-          role: "system" | "user" | "assistant" | "tool";
-          content: string;
-          meta?: JsonObject | null;
+          export_type: string;
+          scope?: JsonObject | null;
+          file_name: string;
+          file_path: string;
+          content_hash: string;
+          chain_fingerprint?: string | null;
+          seal_token?: string | null;
+          seal_signature?: string | null;
+          sealed_at: string;
+          expires_at?: string | null;
+          created_by?: string | null;
           created_at?: string;
         };
         Update: Partial<{
           id: string;
-          thread_id: string;
           project_id: string;
-          role: "system" | "user" | "assistant" | "tool";
-          content: string;
-          meta: JsonObject | null;
+          export_type: string;
+          scope: JsonObject | null;
+          file_name: string;
+          file_path: string;
+          content_hash: string;
+          chain_fingerprint: string | null;
+          seal_token: string | null;
+          seal_signature: string | null;
+          sealed_at: string;
+          expires_at: string | null;
+          created_by: string | null;
           created_at: string;
         }>;
-      };
-
-      actions: {
-        Row: {
-          id: string;
-          project_id: string;
-          thread_id: string | null;
-          node_id: string | null;
-          command: string;
-          payload: JsonObject;
-          status: "queued" | "needs_approval" | "approved" | "rejected" | "executed" | "failed";
-          needs_approval: boolean;
-          approved_by: string | null;
-          rejected_by: string | null;
-          result: JsonObject | null;
-          error: string | null;
-          created_at: string;
-          updated_at: string;
-        };
-        Insert: {
-          id: string;
-          project_id: string;
-          thread_id?: string | null;
-          node_id?: string | null;
-          command: string;
-          payload: JsonObject;
-          status?: "queued" | "needs_approval" | "approved" | "rejected" | "executed" | "failed";
-          needs_approval?: boolean;
-          approved_by?: string | null;
-          rejected_by?: string | null;
-          result?: JsonObject | null;
-          error?: string | null;
-          created_at?: string;
-          updated_at?: string;
-        };
-        Update: Partial<{
-          id: string;
-          project_id: string;
-          thread_id: string | null;
-          node_id: string | null;
-          command: string;
-          payload: JsonObject;
-          status: "queued" | "needs_approval" | "approved" | "rejected" | "executed" | "failed";
-          needs_approval: boolean;
-          approved_by: string | null;
-          rejected_by: string | null;
-          result: JsonObject | null;
-          error: string | null;
-          created_at: string;
-          updated_at: string;
-        }>;
+        Relationships: [];
       };
     };
+
+    Views: EmptySchemaObject;
+    Functions: EmptySchemaObject;
+    Enums: EmptySchemaObject;
+    CompositeTypes: EmptySchemaObject;
   };
 };
