@@ -12,10 +12,10 @@
     "seed:agis": "tsx src/scripts/seedAgis.ts"
   },
   "dependencies": {
-    "@fastify/cors": "^10.0.1",
+    "@fastify/cors": "^11.2.0",
     "@supabase/supabase-js": "^2.49.1",
     "dotenv": "^16.4.5",
-    "fastify": "^4.28.1",
+    "fastify": "^5.8.5",
     "langfuse-node": "^3.38.6",
     "pdfkit": "^0.15.0",
     "zod": "^3.24.1"
