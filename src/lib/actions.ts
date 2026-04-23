@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+
 import type { AdminSupabase } from "./supabase.js";
 import { signCommand } from "./security.js";
 import type { ActionItem, ActionRow, JsonObject } from "../types.js";
@@ -21,40 +22,71 @@ function defaultNodeId(argsNodeId: string | null, actionNodeId?: string): string
   ).trim();
 }
 
-function toActionRowFromCommand(row: Record<string, unknown>, virtualStatus?: ActionRow["status"]): ActionRow {
-  const commandPayload =
-    row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
-      ? (row.payload as JsonObject)
-      : {};
+function asJsonObject(value: unknown): JsonObject {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : {};
+}
 
-  const commandResult =
-    row.result && typeof row.result === "object" && !Array.isArray(row.result)
-      ? (row.result as JsonObject)
-      : null;
+function asNullableString(value: unknown): string | null {
+  return value == null ? null : String(value);
+}
 
+function asActionStatus(value: unknown): ActionRow["status"] {
+  switch (String(value ?? "").trim()) {
+    case "queued":
+    case "needs_approval":
+    case "running":
+    case "done":
+    case "error":
+    case "canceled":
+      return String(value) as ActionRow["status"];
+    default:
+      return "queued";
+  }
+}
+
+function latestTimestamp(row: Record<string, unknown>): string {
+  return String(
+    row.finished_at ??
+      row.executed_at ??
+      row.started_at ??
+      row.approved_at ??
+      row.created_at ??
+      new Date().toISOString(),
+  );
+}
+
+function toActionRowFromCommand(
+  row: Record<string, unknown>,
+  options?: {
+    threadId?: string | null;
+    approvedBy?: string | null;
+    rejectedBy?: string | null;
+  },
+): ActionRow {
   return {
     id: String(row.id),
     project_id: String(row.project_id),
-    thread_id: null,
+    thread_id: options?.threadId ?? null,
     node_id: row.node_id ? String(row.node_id) : null,
     command: String(row.command),
-    payload: commandPayload,
-    status:
-      virtualStatus ??
-      (String(row.status ?? "queued") as ActionRow["status"]),
+    payload: asJsonObject(row.payload),
+    status: asActionStatus(row.status),
     needs_approval: Boolean(row.needs_approval),
-    approved_by: null,
-    rejected_by: null,
-    result: commandResult,
+    approved_by: options?.approvedBy ?? null,
+    rejected_by: options?.rejectedBy ?? null,
+    approved_at: asNullableString(row.approved_at),
+    started_at: asNullableString(row.started_at),
+    executed_at: asNullableString(row.executed_at),
+    finished_at: asNullableString(row.finished_at),
+    result:
+      row.result && typeof row.result === "object" && !Array.isArray(row.result)
+        ? (row.result as JsonObject)
+        : null,
     error: row.error ? String(row.error) : null,
     created_at: String(row.created_at),
-    updated_at: String(
-      row.finished_at ??
-        row.started_at ??
-        row.executed_at ??
-        row.approved_at ??
-        row.created_at,
-    ),
+    updated_at: latestTimestamp(row),
   };
 }
 
@@ -72,7 +104,9 @@ export async function enqueueActions(
   const secret = commandSecret();
 
   if (!secret) {
-    throw new Error("Falta HOCKER_COMMAND_HMAC_SECRET / COMMAND_HMAC_SECRET para firmar commands.");
+    throw new Error(
+      "Falta HOCKER_COMMAND_HMAC_SECRET / COMMAND_HMAC_SECRET para firmar commands.",
+    );
   }
 
   const rows: ActionRow[] = [];
@@ -81,6 +115,8 @@ export async function enqueueActions(
     const node_id = defaultNodeId(args.node_id, action.node_id);
     const payload = (action.payload ?? {}) as JsonObject;
     const id = randomUUID();
+    const needsApproval = args.needsApproval || action.needs_approval === true;
+    const status: ActionRow["status"] = needsApproval ? "needs_approval" : "queued";
 
     const signature = signCommand(
       secret,
@@ -92,8 +128,6 @@ export async function enqueueActions(
       now,
     );
 
-    const status = args.needsApproval || action.needs_approval ? "needs_approval" : "queued";
-
     const { data, error } = await sb
       .from("commands")
       .insert({
@@ -103,7 +137,7 @@ export async function enqueueActions(
         command: action.command,
         payload,
         status,
-        needs_approval: args.needsApproval || action.needs_approval === true,
+        needs_approval: needsApproval,
         signature,
         result: null,
         error: null,
@@ -120,7 +154,11 @@ export async function enqueueActions(
       throw new Error(error?.message || "No se pudo encolar la acción en commands.");
     }
 
-    rows.push(toActionRowFromCommand(data as Record<string, unknown>));
+    rows.push(
+      toActionRowFromCommand(data as Record<string, unknown>, {
+        threadId: args.thread_id,
+      }),
+    );
   }
 
   return rows;
@@ -137,7 +175,9 @@ export async function approveAction(
     .from("commands")
     .update({
       status: "queued",
+      needs_approval: false,
       approved_at: now,
+      finished_at: null,
       error: null,
     })
     .eq("id", action_id)
@@ -148,10 +188,9 @@ export async function approveAction(
     throw new Error(error?.message || "No se pudo aprobar la acción.");
   }
 
-  const row = toActionRowFromCommand(data as Record<string, unknown>, "approved");
-  row.approved_by = approved_by;
-  row.updated_at = now;
-  return row;
+  return toActionRowFromCommand(data as Record<string, unknown>, {
+    approvedBy: approved_by,
+  });
 }
 
 export async function rejectAction(
@@ -165,6 +204,8 @@ export async function rejectAction(
     .from("commands")
     .update({
       status: "canceled",
+      needs_approval: false,
+      approved_at: null,
       error: `Rejected by ${rejected_by}`,
       finished_at: now,
     })
@@ -176,8 +217,7 @@ export async function rejectAction(
     throw new Error(error?.message || "No se pudo rechazar la acción.");
   }
 
-  const row = toActionRowFromCommand(data as Record<string, unknown>, "rejected");
-  row.rejected_by = rejected_by;
-  row.updated_at = now;
-  return row;
+  return toActionRowFromCommand(data as Record<string, unknown>, {
+    rejectedBy: rejected_by,
+  });
 }

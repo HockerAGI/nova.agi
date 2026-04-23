@@ -126,6 +126,14 @@ export interface MemoryMessage {
   meta?: JsonObject | null | undefined;
 }
 
+export type ActionStatus =
+  | "queued"
+  | "needs_approval"
+  | "running"
+  | "done"
+  | "error"
+  | "canceled";
+
 export interface ActionRow {
   id: string;
   project_id: string;
@@ -133,10 +141,14 @@ export interface ActionRow {
   node_id: string | null;
   command: string;
   payload: JsonObject;
-  status: "queued" | "needs_approval" | "approved" | "rejected" | "executed" | "failed";
+  status: ActionStatus;
   needs_approval: boolean;
   approved_by: string | null;
   rejected_by: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  executed_at: string | null;
+  finished_at: string | null;
   result: JsonObject | null;
   error: string | null;
   created_at: string;
