@@ -1,0 +1,15 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+!env.example
+.git
+.github
+*.log
+npm-debug.log*
+coverage
+.cache
+*.tsbuildinfo
+CODE_BACKUPS
+

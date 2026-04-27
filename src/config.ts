@@ -27,6 +27,14 @@ const envSchema = z.object({
   LANGFUSE_PUBLIC_KEY: z.string().optional().default(""),
   LANGFUSE_SECRET_KEY: z.string().optional().default(""),
   LANGFUSE_BASE_URL: z.string().url().default("https://cloud.langfuse.com"),
+}).superRefine((env, ctx) => {
+  if (env.NODE_ENV === "production" && !String(env.NOVA_ORCHESTRATOR_KEY ?? "").trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["NOVA_ORCHESTRATOR_KEY"],
+      message: "NOVA_ORCHESTRATOR_KEY es obligatorio en producción.",
+    });
+  }
 });
 
 const env = envSchema.parse(process.env);
