@@ -22,10 +22,6 @@ export const READONLY_COMMANDS = [
 export const WRITE_COMMANDS = [
   "shell.exec",
   "fs.write",
-  "restart_service",
-  "restart_db",
-  "restart_nova",
-  "restart_telemetry",
   "github.create_branch",
   "github.upsert_file",
   "github.create_pr",
