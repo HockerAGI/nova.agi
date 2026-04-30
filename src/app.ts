@@ -18,6 +18,7 @@ import { createAdminSupabase } from "./lib/supabase.js";
 import { ensureThread, appendMessage, loadThreadMessages } from "./lib/memory.js";
 import { pickAgi } from "./lib/agis.js";
 import { enqueueActions } from "./lib/actions.js";
+import { sanitizeNovaAction, summarizeSupportedCommands } from "./lib/command-policy.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { openaiRespond } from "./providers/openai.js";
 import { geminiRespond } from "./providers/gemini.js";
@@ -115,19 +116,7 @@ function asJsonObject(value: unknown): JsonObject {
 }
 
 function sanitizeAction(value: unknown): ActionItem | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const row = value as Record<string, unknown>;
-  if (typeof row.command !== "string" || !row.command.trim()) return null;
-
-  return {
-    node_id:
-      typeof row.node_id === "string" && row.node_id.trim()
-        ? row.node_id.trim()
-        : undefined,
-    command: row.command.trim(),
-    payload: asJsonObject(row.payload),
-    needs_approval: Boolean(row.needs_approval),
-  };
+  return sanitizeNovaAction(value);
 }
 
 function parseReplyEnvelope(text: string): { reply: string; actions: ActionItem[] } {
@@ -308,6 +297,10 @@ export async function handleChat(
     "Responde con claridad ejecutiva, criterio técnico y sin inventar estado del sistema.",
     "Si no tienes evidencia suficiente, dilo directo.",
     "Si el usuario pide ejecución y allow_actions=true, puedes devolver JSON con reply y actions.",
+    "Protocolo de acciones: solo puedes proponer comandos explícitamente soportados. No inventes comandos, nodos, proveedores ni rutas.",
+    "Toda escritura debe quedar como needs_approval=true. No intentes ejecutar directo a main ni modificar infraestructura sin aprobación.",
+    "Para GitHub usa únicamente comandos github.*; el sistema los enruta a cloud-hocker-one y crea ramas/PR cuando corresponda.",
+    `Comandos soportados:\n${summarizeSupportedCommands()}`,
   ].join("\n");
 
   const completion = await complete(
@@ -321,7 +314,7 @@ export async function handleChat(
 
   let enqueuedActions: ActionItem[] = [];
 
-  if (body.allow_actions && controls.allow_write && parsedReply.actions.length > 0) {
+  if (body.allow_actions && parsedReply.actions.length > 0) {
     const rows = await enqueueActions(supabaseAdmin, {
       project_id,
       thread_id: thread.id,
@@ -378,6 +371,7 @@ export async function handleChat(
         allow_write: controls.allow_write,
         requested_actions: body.allow_actions,
         enqueued_actions: enqueuedActions.length,
+        action_policy: "strict_allowlist_routed",
       },
       context_data: body.context_data ?? {},
     },

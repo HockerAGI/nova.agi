@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AdminSupabase } from "./supabase.js";
 import { signCommand } from "./security.js";
+import { isSupportedCommand, routeNodeForCommand, isWriteCommand } from "./command-policy.js";
 import type { ActionItem, ActionRow, JsonObject } from "../types.js";
 
 function commandSecret(): string {
@@ -112,10 +113,14 @@ export async function enqueueActions(
   const rows: ActionRow[] = [];
 
   for (const action of args.actions) {
-    const node_id = defaultNodeId(args.node_id, action.node_id);
+    if (!isSupportedCommand(action.command)) {
+      throw new Error(`Comando no soportado por política NOVA: ${action.command}`);
+    }
+
+    const node_id = routeNodeForCommand(action.command);
     const payload = (action.payload ?? {}) as JsonObject;
     const id = randomUUID();
-    const needsApproval = args.needsApproval || action.needs_approval === true;
+    const needsApproval = args.needsApproval || action.needs_approval === true || isWriteCommand(action.command);
     const status: ActionRow["status"] = needsApproval ? "needs_approval" : "queued";
 
     const signature = signCommand(
