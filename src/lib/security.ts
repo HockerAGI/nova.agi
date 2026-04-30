@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import { stableJson } from "./stable-json.js";
 
+function normalizeSignedTimestamp(value: string): string {
+  const ms = new Date(value).getTime();
+  if (!Number.isFinite(ms)) return value;
+  return new Date(ms).toISOString();
+}
+
 export function signCommand(
   secret: string,
   id: string,
@@ -10,7 +16,8 @@ export function signCommand(
   payload: unknown,
   created_at: string,
 ): string {
-  const base = [id, project_id, node_id, command, created_at, stableJson(payload)].join("|");
+  const signedCreatedAt = normalizeSignedTimestamp(created_at);
+  const base = [id, project_id, node_id, command, signedCreatedAt, stableJson(payload)].join("|");
   return crypto.createHmac("sha256", secret).update(base).digest("hex");
 }
 
@@ -27,7 +34,8 @@ export function verifyCommandSignature(
 ): boolean {
   if (!secret || !signature) return false;
 
-  const ts = new Date(created_at).getTime();
+  const signedCreatedAt = normalizeSignedTimestamp(created_at);
+  const ts = new Date(signedCreatedAt).getTime();
   if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > maxAgeMs) return false;
 
   const expected = signCommand(secret, id, project_id, node_id, command, payload, created_at);
