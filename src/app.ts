@@ -213,6 +213,63 @@ function parseReplyEnvelope(text: string): { reply: string; actions: ActionItem[
 }
 
 
+
+function naturalGithubActions(message: string): ActionItem[] {
+  const m = String(message || "").toLowerCase();
+
+  const mentionsRepo =
+    /\b(repo|repositorio|github|c[oó]digo|proyecto principal|hocker\.one)\b/i.test(m);
+
+  if (!mentionsRepo) return [];
+
+  const asksTopology =
+    /\b(topolog[ií]a|estructura|archivos|carpetas|lista|listar|mapa|tree|árbol|arbol)\b/i.test(m);
+
+  const knownPaths: Record<string, string> = {
+    "page.tsx": "src/app/page.tsx",
+    "route.ts": "src/app/api/nova/chat/route.ts",
+    "package.json": "package.json",
+    "dockerfile": "Dockerfile",
+    "readme.md": "README.md",
+    "globals.css": "src/app/globals.css",
+    "novachat.tsx": "src/components/NovaChat.tsx",
+    "hockerlivestatus.tsx": "src/components/HockerLiveStatus.tsx",
+  };
+
+  for (const [needle, realPath] of Object.entries(knownPaths)) {
+    if (m.includes(needle)) {
+      return [
+        {
+          node_id: "cloud-hocker-one",
+          command: "github.read_file",
+          payload: { path: realPath, ref: "main" },
+          needs_approval: false,
+        },
+      ];
+    }
+  }
+
+  if (asksTopology) {
+    return [
+      {
+        node_id: "cloud-hocker-one",
+        command: "github.list_tree",
+        payload: { ref: "main", recursive: true },
+        needs_approval: false,
+      },
+    ];
+  }
+
+  return [
+    {
+      node_id: "cloud-hocker-one",
+      command: "github.get_repo",
+      payload: {},
+      needs_approval: false,
+    },
+  ];
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -465,15 +522,17 @@ export async function handleChat(
 
   const parsedReply = parseReplyEnvelope(completion.text);
   const replyText = toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi);
+  const deterministicActions = body.allow_actions ? naturalGithubActions(message) : [];
+  const requestedActions = deterministicActions.length > 0 ? deterministicActions : parsedReply.actions;
 
   let enqueuedActions: ActionItem[] = [];
 
-  if (body.allow_actions && parsedReply.actions.length > 0) {
+  if (body.allow_actions && requestedActions.length > 0) {
     const rows = await enqueueActions(supabaseAdmin, {
       project_id,
       thread_id: thread.id,
       node_id: null,
-      actions: parsedReply.actions,
+      actions: requestedActions,
       needsApproval: false,
     });
 
