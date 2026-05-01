@@ -212,6 +212,78 @@ function parseReplyEnvelope(text: string): { reply: string; actions: ActionItem[
   return { reply: clean, actions: [] };
 }
 
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function supportWorkSummary(agi: { id: string; name: string; kind: string }): string | null {
+  const id = String(agi.id ?? "").toLowerCase();
+
+  const summaries: Record<string, string> = {
+    syntia: "ordenó el contexto y cuidó que el hilo no se perdiera.",
+    vertx: "revisó seguridad, permisos y riesgos antes de avanzar.",
+    hostia: "validó la parte operativa, infraestructura, endpoints y ejecución.",
+    jurix: "revisó riesgos legales, privacidad y puntos de cumplimiento.",
+    numia: "revisó costos, consumo y riesgo financiero.",
+    nova_ads: "revisó la parte de estrategia comercial, campañas y embudo.",
+    candy: "apoyó con dirección creativa, narrativa visual y claridad de contenido.",
+    pro_ia: "apoyó con la parte audiovisual, guion, voz o producción.",
+    curvewind: "ayudó a ordenar escenarios, predicción y estrategia.",
+    revia: "apoyó con seguimiento comercial, cierres y flujo de CRM.",
+    trackhok: "revisó señales, monitoreo y estado operativo.",
+    nexpa: "revisó límites de seguridad humana y reducción de riesgo.",
+    chido_wins: "revisó riesgo y probabilidad sin prometer resultados falsos.",
+    chido_gerente: "ordenó la operación y la disciplina de ejecución.",
+    shadows: "apoyó con tareas de soporte bajo límites controlados.",
+  };
+
+  if (id === "nova") return null;
+  return summaries[id] ?? `apoyó en la parte ${agi.kind || "especializada"} del trabajo.`;
+}
+
+function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind: string }): string {
+  const agiName = String(agi.name || "").trim();
+  let clean = String(reply || "").trim();
+
+  if (!clean) clean = "Listo.";
+
+  const knownNames = [
+    "HOSTIA",
+    "SYNTIA",
+    "VERTX",
+    "JURIX",
+    "NUMIA",
+    "Nova Ads",
+    "Candy Ads",
+    "Pro IA",
+    "Curvewind",
+    "REVIA",
+    "Trackhok",
+    "NEXPA",
+    "Chido Wins",
+    "Chido Gerente",
+    "Shadows IA",
+  ];
+
+  clean = clean.replace(/\bMe presento como\s+[A-Za-zÁÉÍÓÚáéíóúÑñ0-9_ ]+[:,]?\s*/gi, "Soy NOVA. ");
+  clean = clean.replace(/\bsoy\s+HOSTIA\b[:,]?\s*/gi, "soy NOVA ");
+  clean = clean.replace(/\bSoy\s+HOSTIA\b[:,]?\s*/g, "Soy NOVA ");
+
+  for (const name of knownNames) {
+    const pattern = new RegExp(`\\b(Me llamo|Soy)\\s+${escapeRegExp(name)}\\b[:,]?\\s*`, "gi");
+    clean = clean.replace(pattern, "Soy NOVA. ");
+  }
+
+  const support = supportWorkSummary(agi);
+
+  if (support && agiName && !new RegExp(`Me apoy[oó]\\s+${escapeRegExp(agiName)}`, "i").test(clean)) {
+    clean = `${clean}\n\nMe apoyó ${agiName}: ${support}`;
+  }
+
+  return clean.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 async function completeProvider(
   provider: Provider,
   messages: ChatMessage[],
@@ -368,7 +440,11 @@ export async function handleChat(
   const monthlyTokens = await tokensUsedThisMonth(project_id, provider);
 
   const systemPrompt = [
+    "Eres NOVA, núcleo ejecutivo del ecosistema HOCKER. NOVA siempre está al mando y habla con una sola voz.",
+    `AGI de apoyo activa: ${agi.name}.`,
+    "Si una AGI de apoyo participa, menciónala de forma natural y breve. No te presentes como esa AGI; preséntate siempre como NOVA.",
     agi.system_prompt,
+    "Aunque el perfil de apoyo use otra identidad interna, la respuesta pública siempre debe salir como NOVA.",
     `Proyecto activo: ${project_id}.`,
     `Intención clasificada: ${intentDecision.intent}.`,
     `Consumo mensual estimado del motor activo: ${monthlyTokens} tokens.`,
@@ -388,7 +464,7 @@ export async function handleChat(
   });
 
   const parsedReply = parseReplyEnvelope(completion.text);
-  const replyText = parsedReply.reply || "Sin respuesta.";
+  const replyText = toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi);
 
   let enqueuedActions: ActionItem[] = [];
 
