@@ -27,6 +27,15 @@ const envSchema = z.object({
   LANGFUSE_PUBLIC_KEY: z.string().optional().default(""),
   LANGFUSE_SECRET_KEY: z.string().optional().default(""),
   LANGFUSE_BASE_URL: z.string().url().default("https://cloud.langfuse.com"),
+
+  DEFAULT_PROVIDER: z.enum(["openai", "gemini", "anthropic", "ollama"]).default("openai"),
+  PROVIDER_FALLBACKS: z.string().default("openai,gemini,anthropic,ollama"),
+  TEXT_PROVIDER_ORDER: z.string().default("openai,gemini,anthropic,ollama"),
+  CODE_PROVIDER_ORDER: z.string().default("openai,anthropic,gemini,ollama"),
+  LONG_CONTEXT_PROVIDER_ORDER: z.string().default("gemini,openai,anthropic,ollama"),
+  IMAGE_PROVIDER: z.enum(["openai", "gemini", "ollama"]).default("openai"),
+  VIDEO_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
+  HIDE_PROVIDER_FROM_USER: z.coerce.boolean().default(true),
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV === "production" && !String(env.NOVA_ORCHESTRATOR_KEY ?? "").trim()) {
     ctx.addIssue({
@@ -38,6 +47,16 @@ const envSchema = z.object({
 });
 
 const env = envSchema.parse(process.env);
+
+function parseProviderOrder(value: string): Array<"openai" | "gemini" | "anthropic" | "ollama"> {
+  const allowed = new Set(["openai", "gemini", "anthropic", "ollama"]);
+  const order = value
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item): item is "openai" | "gemini" | "anthropic" | "ollama" => allowed.has(item));
+
+  return order.length > 0 ? order : ["openai", "gemini", "anthropic", "ollama"];
+}
 
 export const config = {
   PORT: String(env.PORT),
@@ -69,6 +88,17 @@ export const config = {
     publicKey: env.LANGFUSE_PUBLIC_KEY,
     secretKey: env.LANGFUSE_SECRET_KEY,
     baseUrl: env.LANGFUSE_BASE_URL,
+  },
+
+  providerRouting: {
+    defaultProvider: env.DEFAULT_PROVIDER,
+    fallbacks: parseProviderOrder(env.PROVIDER_FALLBACKS),
+    textOrder: parseProviderOrder(env.TEXT_PROVIDER_ORDER),
+    codeOrder: parseProviderOrder(env.CODE_PROVIDER_ORDER),
+    longContextOrder: parseProviderOrder(env.LONG_CONTEXT_PROVIDER_ORDER),
+    imageProvider: env.IMAGE_PROVIDER,
+    videoProvider: env.VIDEO_PROVIDER,
+    hideProviderFromUser: env.HIDE_PROVIDER_FROM_USER,
   },
 };
 

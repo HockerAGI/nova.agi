@@ -58,10 +58,60 @@ function pickProvider(prefer: string | undefined): Provider {
   if (p === "anthropic" && providerReady("anthropic")) return "anthropic";
   if (p === "ollama" && providerReady("ollama")) return "ollama";
 
-  if (providerReady("anthropic")) return "anthropic";
-  if (providerReady("openai")) return "openai";
-  if (providerReady("gemini")) return "gemini";
-  return "ollama";
+  for (const candidate of config.providerRouting.fallbacks) {
+    if (providerReady(candidate)) return candidate;
+  }
+
+  return config.providerRouting.defaultProvider;
+}
+
+function providerOrderForIntent(intent: Intent, prefer: string | undefined): Provider[] {
+  const requested = String(prefer ?? "").toLowerCase();
+
+  const baseOrder =
+    intent === "code" || intent === "ops"
+      ? config.providerRouting.codeOrder
+      : intent === "research"
+        ? config.providerRouting.longContextOrder
+        : config.providerRouting.textOrder;
+
+  const order: Provider[] = [];
+
+  if (
+    (requested === "openai" ||
+      requested === "gemini" ||
+      requested === "anthropic" ||
+      requested === "ollama") &&
+    providerReady(requested)
+  ) {
+    order.push(requested);
+  }
+
+  for (const candidate of baseOrder) {
+    if (providerReady(candidate) && !order.includes(candidate)) {
+      order.push(candidate);
+    }
+  }
+
+  for (const candidate of config.providerRouting.fallbacks) {
+    if (providerReady(candidate) && !order.includes(candidate)) {
+      order.push(candidate);
+    }
+  }
+
+  return order;
+}
+
+function sanitizeProviderError(error: unknown): string {
+  if (!(error instanceof Error)) return "provider_error";
+  const message = error.message.toLowerCase();
+
+  if (message.includes("credit") || message.includes("billing") || message.includes("quota")) return "billing_or_quota";
+  if (message.includes("rate") || message.includes("429")) return "rate_limit";
+  if (message.includes("timeout") || message.includes("abort")) return "timeout";
+  if (message.includes("api key") || message.includes("unauthorized") || message.includes("401")) return "auth";
+
+  return "provider_error";
 }
 
 function detectIntent(message: string): { intent: Intent; reason: string } {
@@ -162,7 +212,7 @@ function parseReplyEnvelope(text: string): { reply: string; actions: ActionItem[
   return { reply: clean, actions: [] };
 }
 
-async function complete(
+async function completeProvider(
   provider: Provider,
   messages: ChatMessage[],
   mode: CompletionMode,
@@ -202,6 +252,32 @@ async function complete(
     messages,
     timeoutMs,
   });
+}
+
+async function completeWithFallback(args: {
+  providers: Provider[];
+  messages: ChatMessage[];
+  mode: CompletionMode;
+}) {
+  const failures: Array<{ provider: Provider; reason: string }> = [];
+
+  for (const provider of args.providers) {
+    try {
+      const result = await completeProvider(provider, args.messages, args.mode);
+      return {
+        ...result,
+        fallbackUsed: failures.length > 0,
+        internalFailures: failures,
+      };
+    } catch (error) {
+      failures.push({
+        provider,
+        reason: sanitizeProviderError(error),
+      });
+    }
+  }
+
+  throw new Error("NOVA no pudo completar la respuesta con los motores disponibles.");
 }
 
 async function getControls(project_id: string): Promise<{ kill_switch: boolean; allow_write: boolean }> {
@@ -247,7 +323,6 @@ export async function handleChat(
 
   const project_id = body.project_id.trim();
   const message = String(body.message ?? body.text ?? "").trim();
-  const provider = pickProvider(body.prefer);
   const trace_id = randomUUID();
   const controls = await getControls(project_id);
 
@@ -259,15 +334,18 @@ export async function handleChat(
     });
   }
 
-  if (!providerReady(provider)) {
+  const intentDecision = detectIntent(message);
+  const providerOrder = providerOrderForIntent(intentDecision.intent, body.prefer);
+  const provider = providerOrder[0] ?? pickProvider(body.prefer);
+
+  if (providerOrder.length === 0) {
     return reply.status(503).send({
       ok: false,
-      error: `No hay proveedor disponible para "${provider}".`,
+      error: "NOVA no tiene motores disponibles configurados.",
       trace_id,
     });
   }
 
-  const intentDecision = detectIntent(message);
   const agi = pickAgi(intentDecision.intent, message);
 
   const thread = await ensureThread(
@@ -293,7 +371,7 @@ export async function handleChat(
     agi.system_prompt,
     `Proyecto activo: ${project_id}.`,
     `Intención clasificada: ${intentDecision.intent}.`,
-    `Consumo mensual estimado para ${provider}: ${monthlyTokens} tokens.`,
+    `Consumo mensual estimado del motor activo: ${monthlyTokens} tokens.`,
     "Responde con claridad ejecutiva, criterio técnico y sin inventar estado del sistema.",
     "Si no tienes evidencia suficiente, dilo directo.",
     "Si el usuario pide ejecución y allow_actions=true, puedes devolver JSON con reply y actions.",
@@ -303,11 +381,11 @@ export async function handleChat(
     `Comandos soportados:\n${summarizeSupportedCommands()}`,
   ].join("\n");
 
-  const completion = await complete(
-    provider,
-    buildConversation(systemPrompt, history, message),
-    body.mode,
-  );
+  const completion = await completeWithFallback({
+    providers: providerOrder,
+    messages: buildConversation(systemPrompt, history, message),
+    mode: body.mode,
+  });
 
   const parsedReply = parseReplyEnvelope(completion.text);
   const replyText = parsedReply.reply || "Sin respuesta.";
@@ -333,7 +411,7 @@ export async function handleChat(
 
   await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", replyText, {
     trace_id,
-    provider,
+    provider: completion.provider,
     model: completion.model,
     intent: intentDecision.intent,
     agi_id: agi.id,
@@ -343,7 +421,7 @@ export async function handleChat(
   await recordUsage({
     project_id,
     thread_id: thread.id,
-    provider,
+    provider: completion.provider,
     model: completion.model,
     tokens_in: completion.usage?.tokens_in,
     tokens_out: completion.usage?.tokens_out,
@@ -358,7 +436,7 @@ export async function handleChat(
     ok: true,
     project_id,
     thread_id: thread.id,
-    provider,
+    provider: completion.provider,
     model: completion.model,
     intent: intentDecision.intent,
     agi_id: agi.id,
@@ -372,6 +450,8 @@ export async function handleChat(
         requested_actions: body.allow_actions,
         enqueued_actions: enqueuedActions.length,
         action_policy: "strict_allowlist_routed",
+        provider_router: "native_invisible_fallback",
+        fallback_used: completion.fallbackUsed,
       },
       context_data: body.context_data ?? {},
     },
