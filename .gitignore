@@ -141,3 +141,7 @@ vite.config.ts.timestamp-*
 android/local.properties
 HOCKER_AUDIT_TOPOLOGY_*
 hocker_topology_audit_*.zip
+
+.env.production
+.env.railway
+.env.vercel.production
