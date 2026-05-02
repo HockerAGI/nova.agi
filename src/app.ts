@@ -117,7 +117,7 @@ function sanitizeProviderError(error: unknown): string {
 function detectIntent(message: string): { intent: Intent; reason: string } {
   const m = message.toLowerCase();
 
-  if (/(infra|server|deploy|cloud|node|docker|endpoint|api|token|seguridad|auth|firma|hmac|sql|supabase)/i.test(m)) {
+  if (/(infra|server|deploy|cloud|node|docker|endpoint|api|token|seguridad|auth|firma|hmac|sql|supabase|agente|hocker-node|health|ready|estado operativo)/i.test(m)) {
     return { intent: "ops", reason: "Se detectó lenguaje técnico-operativo." };
   }
 

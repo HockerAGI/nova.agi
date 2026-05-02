@@ -579,7 +579,7 @@ export function pickAgi(intent: Intent, message: string): AgiDef {
   if (/(privacidad|contrato|tos|compliance|jur[ií]d|legal|consentimiento)/i.test(m)) return getAgiByKey("JURIX");
   if (/(roi|presupuesto|tokens|costo|finanza|stripe|mercadopago|pago)/i.test(m)) return getAgiByKey("NUMIA");
   if (/(seguridad|firma|hmac|audit|rls|permiso|token|zero-?trust|riesgo)/i.test(m)) return getAgiByKey("VERTX");
-  if (/(infra|deploy|docker|endpoint|backend|supabase|sql|cloud run|cron|queue|node|github)/i.test(m)) return getAgiByKey("HOSTIA");
+  if (/(infra|deploy|docker|endpoint|backend|supabase|sql|cloud run|cron|queue|node|github|agente|hocker-node|health|ready|estado operativo)/i.test(m)) return getAgiByKey("HOSTIA");
   if (/(memoria|contexto|recuerda|hilo|resumen|continuidad)/i.test(m)) return getAgiByKey("SYNTIA");
   if (/(meta ads|tiktok|campa[ñn]a|lead|crm|social|whatsapp|anuncio)/i.test(m)) return getAgiByKey("NOVA_ADS");
   if (/(venta|cierre|prospecto|cliente|seguimiento|pipeline)/i.test(m)) return getAgiByKey("REVIA");
