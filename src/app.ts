@@ -213,6 +213,28 @@ function parseReplyEnvelope(text: string): { reply: string; actions: ActionItem[
   return { reply: clean, actions: [] };
 }
 
+function naturalLocalAgentActions(message: string): ActionItem[] {
+  const m = String(message || "").toLowerCase();
+
+  const mentionsLocalAgent =
+    /\b(agente local|hocker-node|hocker-node-1|nodo local|node agent|agente)\b/i.test(m);
+
+  const asksStatus =
+    /\b(revisa|revisar|verifica|validar|diagn[oó]stico|diagnostico|estado|status|health|ready|online)\b/i.test(m);
+
+  if (!mentionsLocalAgent || !asksStatus) return [];
+
+  return [
+    {
+      node_id: "hocker-node-1",
+      command: "status",
+      payload: {},
+      needs_approval: false,
+    },
+  ];
+}
+
+
 
 
 function naturalGithubActions(message: string): ActionItem[] {
@@ -611,7 +633,10 @@ export async function handleChat(
 
   const parsedReply = parseReplyEnvelope(completion.text);
   const replyText = toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi);
-  const deterministicActions = body.allow_actions ? naturalGithubActions(message) : [];
+  const deterministicActions = body.allow_actions
+    ? [...naturalLocalAgentActions(message), ...naturalGithubActions(message)]
+    : [];
+
   const requestedActions = deterministicActions.length > 0 ? deterministicActions : parsedReply.actions;
 
   let enqueuedActions: ActionItem[] = [];

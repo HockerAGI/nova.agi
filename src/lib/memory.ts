@@ -91,6 +91,7 @@ export async function appendMessage(
       role: dbRole(role),
       content,
       created_at: now,
+      meta: _meta,
     })
     .select("*")
     .single();
