@@ -16,7 +16,7 @@ import type {
 } from "./types.js";
 import { createAdminSupabase } from "./lib/supabase.js";
 import { ensureThread, appendMessage, loadThreadMessages } from "./lib/memory.js";
-import { pickAgi } from "./lib/agis.js";
+import { pickAgiFromRegistry, registryPromptBlock } from "./lib/agi-registry.js";
 import { enqueueActions } from "./lib/actions.js";
 import { sanitizeNovaAction, summarizeSupportedCommands } from "./lib/command-policy.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
@@ -524,7 +524,8 @@ export async function handleChat(
     });
   }
 
-  const agi = pickAgi(intentDecision.intent, message);
+  const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision.intent, message);
+  const agi = registryDecision.agi;
 
   const thread = await ensureThread(
     supabaseAdmin,
@@ -550,6 +551,7 @@ export async function handleChat(
     `AGI de apoyo activa: ${agi.name}.`,
     "Si una AGI de apoyo participa, menciónala de forma natural y breve. No te presentes como esa AGI; preséntate siempre como NOVA.",
     agi.system_prompt,
+    registryPromptBlock(agi),
     "Aunque el perfil de apoyo use otra identidad interna, la respuesta pública siempre debe salir como NOVA.",
     `Proyecto activo: ${project_id}.`,
     `Intención clasificada: ${intentDecision.intent}.`,
@@ -629,6 +631,7 @@ export async function handleChat(
     trace_id,
     meta: {
       reason: intentDecision.reason,
+      agi_registry: registryDecision.source,
       controls: {
         allow_write: controls.allow_write,
         requested_actions: body.allow_actions,
