@@ -17,6 +17,7 @@ import type {
 import { createAdminSupabase } from "./lib/supabase.js";
 import { ensureThread, appendMessage, loadThreadMessages } from "./lib/memory.js";
 import { pickAgiFromRegistry, registryPromptBlock } from "./lib/agi-registry.js";
+import { loadSyntiaMemory, recordSyntiaInteraction, syntiaMemoryPromptBlock } from "./lib/syntia-memory.js";
 import { enqueueActions } from "./lib/actions.js";
 import { sanitizeNovaAction, summarizeSupportedCommands } from "./lib/command-policy.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
@@ -567,6 +568,7 @@ export async function handleChat(
   );
 
   const history = await loadThreadMessages(supabaseAdmin, thread.id, project_id, 20);
+  const syntiaMemory = await loadSyntiaMemory(supabaseAdmin, project_id);
 
   await appendMessage(supabaseAdmin, thread.id, project_id, "user", message, {
     trace_id,
@@ -587,6 +589,7 @@ export async function handleChat(
     "Si una AGI te apoya, dilo breve y natural: por ejemplo, HOSTIA me ayudó a revisar la operación. No lo conviertas en reporte técnico.",
     agi.system_prompt,
     registryPromptBlock(agi),
+    syntiaMemoryPromptBlock(syntiaMemory),
     "Aunque el perfil de apoyo use otra identidad interna, la respuesta pública siempre debe salir como NOVA.",
     `Proyecto activo: ${project_id}.`,
     `Intención clasificada: ${intentDecision.intent}.`,
@@ -639,6 +642,16 @@ export async function handleChat(
     actions_enqueued: enqueuedActions.length,
   });
 
+  await recordSyntiaInteraction(supabaseAdmin, {
+    project_id,
+    trace_id,
+    thread_id: thread.id,
+    intent: intentDecision.intent,
+    agi_id: agi.id,
+    user_message: message,
+    reply: replyText,
+  }).catch(() => undefined);
+
   await recordUsage({
     project_id,
     thread_id: thread.id,
@@ -667,6 +680,8 @@ export async function handleChat(
     meta: {
       reason: intentDecision.reason,
       agi_registry: registryDecision.source,
+      syntia_memory: syntiaMemory.source,
+      syntia_memory_items: syntiaMemory.items.length,
       controls: {
         allow_write: controls.allow_write,
         requested_actions: body.allow_actions,
