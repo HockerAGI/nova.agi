@@ -222,6 +222,55 @@ function naturalGithubActions(message: string): ActionItem[] {
 
   if (!mentionsRepo) return [];
 
+  const asksWrite =
+    /\b(crea|crear|genera|generar|escribe|modifica|actualiza|mejora|edita|propuesta|pull request|pr|rama)\b/i.test(m) &&
+    /\b(documentaci[oó]n|mejora|archivo|pull request|pr|rama|propuesta)\b/i.test(m);
+
+  if (asksWrite) {
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+    const branch = `nova/natural-docs-improvement-${stamp}`;
+    const path = "docs/nova-smoke-tests/NOVA_NATURAL_EDIT_TEST.md";
+    const content = [
+      "# NOVA Natural Edit Test",
+      "",
+      "Prueba real de edición natural controlada.",
+      "",
+      `- Proyecto: hocker-one`,
+      `- Rama: ${branch}`,
+      `- Fecha UTC: ${new Date().toISOString()}`,
+      "- Ejecutado por: NOVA con apoyo operativo de HOSTIA",
+      "- Objetivo: validar que una instrucción normal pueda crear una rama, escribir un archivo y abrir un Pull Request draft.",
+      "",
+      "Esta prueba no modifica main directamente.",
+      "",
+    ].join("\n");
+
+    return [
+      {
+        node_id: "cloud-hocker-one",
+        command: "github.upsert_file",
+        payload: {
+          branch,
+          path,
+          content,
+          message: "test: validate NOVA natural edit flow",
+        },
+        needs_approval: true,
+      },
+      {
+        node_id: "cloud-hocker-one",
+        command: "github.create_pr",
+        payload: {
+          branch,
+          title: "test: validate NOVA natural edit flow",
+          body: "Prueba controlada de NOVA para validar edición natural con rama segura y Pull Request draft. No modifica main directamente.",
+          draft: true,
+        },
+        needs_approval: true,
+      },
+    ];
+  }
+
   const asksTopology =
     /\b(topolog[ií]a|estructura|archivos|carpetas|lista|listar|mapa|tree|árbol|arbol)\b/i.test(m);
 
