@@ -35,6 +35,16 @@ export interface AgiDef {
   parent_id: string | null;
   tags: string[];
   system_prompt: string;
+
+  mission?: string;
+  objectives?: string[];
+  functions?: string[];
+  limits?: string[];
+  allowed_commands?: string[];
+  status?: "active" | "guarded" | "planned";
+  priority?: number;
+  owner_area?: string;
+  memory_scope?: string[];
 }
 
 export interface AgiProfile {

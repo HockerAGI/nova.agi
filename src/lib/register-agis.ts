@@ -7,13 +7,26 @@ export async function seedAgis(): Promise<number> {
   const rows = AGIS.map((agi) => ({
     id: agi.id,
     name: agi.name,
-    description: String(agi.system_prompt ?? "").slice(0, 180),
+    description: agi.mission ?? String(agi.system_prompt ?? "").slice(0, 180),
     version: "1.0.0",
     tags: Array.isArray(agi.tags) ? agi.tags : [],
     meta: {
+      key: agi.key,
       level: agi.level,
       parent_id: agi.parent_id ?? null,
       kind: agi.kind,
+      status: agi.status ?? "active",
+      priority: agi.priority ?? 99,
+      owner_area: agi.owner_area ?? null,
+      mission: agi.mission ?? null,
+      objectives: agi.objectives ?? [],
+      functions: agi.functions ?? [],
+      limits: agi.limits ?? [],
+      allowed_commands: agi.allowed_commands ?? [],
+      memory_scope: agi.memory_scope ?? [],
+      system_prompt: agi.system_prompt,
+      updated_by: "nova.agi",
+      registry_version: "agi-registry-v1",
     },
   }));
 
