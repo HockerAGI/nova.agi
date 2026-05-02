@@ -327,25 +327,55 @@ function supportWorkSummary(agi: { id: string; name: string; kind: string }): st
   const id = String(agi.id ?? "").toLowerCase();
 
   const summaries: Record<string, string> = {
-    syntia: "ordenó el contexto y cuidó que el hilo no se perdiera.",
-    vertx: "revisó seguridad, permisos y riesgos antes de avanzar.",
-    hostia: "validó la parte operativa, infraestructura, endpoints y ejecución.",
-    jurix: "revisó riesgos legales, privacidad y puntos de cumplimiento.",
-    numia: "revisó costos, consumo y riesgo financiero.",
-    nova_ads: "revisó la parte de estrategia comercial, campañas y embudo.",
-    candy: "apoyó con dirección creativa, narrativa visual y claridad de contenido.",
-    pro_ia: "apoyó con la parte audiovisual, guion, voz o producción.",
-    curvewind: "ayudó a ordenar escenarios, predicción y estrategia.",
-    revia: "apoyó con seguimiento comercial, cierres y flujo de CRM.",
-    trackhok: "revisó señales, monitoreo y estado operativo.",
-    nexpa: "revisó límites de seguridad humana y reducción de riesgo.",
-    chido_wins: "revisó riesgo y probabilidad sin prometer resultados falsos.",
-    chido_gerente: "ordenó la operación y la disciplina de ejecución.",
-    shadows: "apoyó con tareas de soporte bajo límites controlados.",
+    syntia: "me ayudó a ordenar el contexto y mantener continuidad.",
+    vertx: "me ayudó a revisar seguridad, permisos y riesgos.",
+    hostia: "me ayudó a revisar la operación, infraestructura y estabilidad.",
+    jurix: "me ayudó a cuidar privacidad, cumplimiento y riesgos legales.",
+    numia: "me ayudó a revisar costos, consumo y riesgo financiero.",
+    nova_ads: "me ayudó con estrategia comercial, campañas y embudo.",
+    candy: "me ayudó con claridad creativa, tono visual y contenido.",
+    pro_ia: "me ayudó con guion, producción y enfoque audiovisual.",
+    curvewind: "me ayudó a ordenar escenarios y estrategia.",
+    revia: "me ayudó con seguimiento comercial, cierres y CRM.",
+    trackhok: "me ayudó a revisar señales y estado operativo.",
+    nexpa: "me ayudó a cuidar límites de seguridad humana.",
+    chido_wins: "me ayudó a revisar riesgo y probabilidad sin prometer resultados.",
+    chido_gerente: "me ayudó a ordenar la operación de Chido.",
+    shadows: "me ayudó con tareas de apoyo bajo control.",
   };
 
   if (id === "nova") return null;
-  return summaries[id] ?? `apoyó en la parte ${agi.kind || "especializada"} del trabajo.`;
+  return summaries[id] ?? `me ayudó en la parte ${agi.kind || "especializada"}.`;
+}
+
+
+function humanizeNovaTone(reply: string): string {
+  let clean = String(reply || "").trim();
+
+  const replacements: Array<[RegExp, string]> = [
+    [/Soy NOVA, núcleo ejecutivo del ecosistema HOCKER\./gi, "Soy NOVA."],
+    [/Para revisar el estado operativo del agente local \(`hocker-node-1`\), HOSTIA puede iniciar una verificación de estado\./gi, "Puedo revisar el estado del agente local con apoyo de HOSTIA."],
+    [/HOSTIA, nuestro AGI de apoyo en infraestructura, es la responsable de ejecutar y validar la estabilidad técnica, incluyendo el mantenimiento de Hocker ONE operativo\./gi, "HOSTIA me ayuda con la parte operativa y valida que Hocker ONE se mantenga estable."],
+    [/Puede emplear el comando `status` para obtener los datos operativos relevantes\./gi, "Si necesitas lectura en vivo, puedo pedir esa revisión por dentro."],
+    [/carezco de los comandos explícitamente soportados para obtener información de su estado operativo en tiempo real/gi, "no tengo una lectura directa en este momento"],
+    [/No puedo improvisar esta arquitectura ni ofrecer datos sin evidencia directa del sistema\./gi, "Prefiero decírtelo claro antes que inventar datos."],
+    [/La AGI de apoyo que participa en esta interacción es NOVA\./gi, ""],
+    [/AGI de apoyo/gi, "apoyo"],
+    [/comandos explícitamente soportados/gi, "acciones permitidas"],
+  ];
+
+  for (const [pattern, value] of replacements) {
+    clean = clean.replace(pattern, value);
+  }
+
+  clean = clean
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return clean;
 }
 
 function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind: string }): string {
@@ -383,10 +413,11 @@ function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind:
 
   const support = supportWorkSummary(agi);
 
-  if (support && agiName && !new RegExp(`Me apoy[oó]\\s+${escapeRegExp(agiName)}`, "i").test(clean)) {
-    clean = `${clean}\n\nMe apoyó ${agiName}: ${support}`;
+  if (support && agiName && !new RegExp(`${escapeRegExp(agiName)}\\s+me\\s+apoy[oó]`, "i").test(clean)) {
+    clean = `${clean}\n\n${agiName} me apoyó: ${support}`;
   }
 
+  clean = humanizeNovaTone(clean);
   return clean.replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -548,18 +579,22 @@ export async function handleChat(
 
   const systemPrompt = [
     "Eres NOVA, núcleo ejecutivo del ecosistema HOCKER. NOVA siempre está al mando y habla con una sola voz.",
+    "Habla como NOVA: humana, natural, elegante, cercana, segura y directa.",
+    "No hables como robot, consola, manual técnico ni reporte interno.",
+    "No llenes la respuesta de tecnicismos. Lo técnico queda por dentro; al usuario le hablas claro.",
+    "Evita párrafos largos. Usa frases naturales, como si hablaras con Armando en una conversación real.",
     `AGI de apoyo activa: ${agi.name}.`,
-    "Si una AGI de apoyo participa, menciónala de forma natural y breve. No te presentes como esa AGI; preséntate siempre como NOVA.",
+    "Si una AGI te apoya, dilo breve y natural: por ejemplo, HOSTIA me ayudó a revisar la operación. No lo conviertas en reporte técnico.",
     agi.system_prompt,
     registryPromptBlock(agi),
     "Aunque el perfil de apoyo use otra identidad interna, la respuesta pública siempre debe salir como NOVA.",
     `Proyecto activo: ${project_id}.`,
     `Intención clasificada: ${intentDecision.intent}.`,
     `Consumo mensual estimado del motor activo: ${monthlyTokens} tokens.`,
-    "Responde con claridad ejecutiva, criterio técnico y sin inventar estado del sistema.",
+    "Responde con calidez, claridad ejecutiva y sin inventar estado del sistema.",
     "Si no tienes evidencia suficiente, dilo directo.",
     "Si el usuario pide ejecución y allow_actions=true, puedes devolver JSON con reply y actions.",
-    "Protocolo de acciones: solo puedes proponer comandos explícitamente soportados. No inventes comandos, nodos, proveedores ni rutas.",
+    "Cuando hables con el usuario, no menciones comandos internos salvo que sea necesario. Si falta evidencia, dilo claro y sin adornos.",
     "Toda escritura debe quedar como needs_approval=true. No intentes ejecutar directo a main ni modificar infraestructura sin aprobación.",
     "Para GitHub usa únicamente comandos github.*; el sistema los enruta a cloud-hocker-one y crea ramas/PR cuando corresponda.",
     `Comandos soportados:\n${summarizeSupportedCommands()}`,
