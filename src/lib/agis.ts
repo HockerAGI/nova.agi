@@ -582,20 +582,44 @@ function pickChidoCasinoAgi(message: string): string | null {
 
   if (!mentionsChido) return null;
 
+  // 1) Memoria y continuidad.
   if (/\b(memoria|contexto|recuerdas|historial|continuidad|syntia)\b/i.test(m)) return "syntia";
 
-  if (/\b(deploy|hosting|infra|infraestructura|api|endpoint|status|estado|servidor|vercel|pasarela|token|tokens|hostia)\b/i.test(m)) return "hostia";
+  // 2) Predicción, probabilidad y simulación responsable.
+  if (/\b(chido wins|predicci[oó]n|predecir|simulaci[oó]n|probabilidad|probabilidades|apuesta segura|jugada segura|winrate|odds|riesgo probabil[ií]stico)\b/i.test(m)) {
+    return "chido_wins";
+  }
 
-  if (/\b(seguridad|fraude|riesgo|webhook|firma|hmac|sesion|sesión|ataque|abuso|vertx)\b/i.test(m)) return "vertx";
+  // 3) Finanzas, dinero, saldos, depósitos, retiros.
+  if (/\b(finanza|finanzas|roi|costo|costos|balance|balances|saldo|saldos|retiro|retiros|dep[oó]sito|deposito|cashflow|numia|wallet)\b/i.test(m)) {
+    return "numia";
+  }
 
-  if (/\b(legal|licencia|cumplimiento|compliance|privacidad|terminos|términos|jurix|juego responsable|autoexclusi[oó]n|kyc)\b/i.test(m)) return "jurix";
+  // 4) Legal, cumplimiento, KYC y juego responsable.
+  if (/\b(legal|licencia|cumplimiento|compliance|privacidad|terminos|términos|jurix|juego responsable|autoexclusi[oó]n|kyc)\b/i.test(m)) {
+    return "jurix";
+  }
 
-  if (/\b(finanza|finanzas|roi|costo|costos|balance|balances|saldo|saldos|retiro|retiros|dep[oó]sito|deposito|cashflow|numia)\b/i.test(m)) return "numia";
+  // 5) Seguridad, fraude, webhooks, firmas.
+  if (/\b(seguridad|fraude|riesgo t[eé]cnico|webhook|firma|hmac|sesion|sesión|ataque|abuso|vertx)\b/i.test(m)) {
+    return "vertx";
+  }
 
-  if (/\b(curvewind|estrategia|crecimiento|reinversi[oó]n|escenario|escenarios|proyecci[oó]n)\b/i.test(m)) return "curvewind";
+  // 6) Infraestructura técnica pura.
+  // Importante: "estado general de Chido" NO debe ir a HOSTIA.
+  // HOSTIA solo entra cuando el usuario pide infraestructura, deploy, endpoint, servidor o health técnico.
+  if (/\b(deploy|hosting|infra|infraestructura|api|endpoint|servidor|vercel|pasarela|token|tokens|hostia|health|ready|status t[eé]cnico|estado t[eé]cnico)\b/i.test(m)) {
+    return "hostia";
+  }
 
-  if (/\b(chido wins|predicci[oó]n|predecir|simulaci[oó]n|probabilidad|probabilidades|apuesta segura|jugada segura|winrate|odds)\b/i.test(m)) return "chido_wins";
+  // 7) Estrategia.
+  if (/\b(curvewind|estrategia|crecimiento|reinversi[oó]n|escenario|escenarios|proyecci[oó]n)\b/i.test(m)) {
+    return "curvewind";
+  }
 
+  // 8) Operación general de casino.
+  // Preguntas tipo "quién opera", "estado general", "a cargo", "admin", "métricas",
+  // "bonos", "usuarios" deben caer aquí.
   return "chido_gerente";
 }
 
