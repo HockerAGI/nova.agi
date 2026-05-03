@@ -573,7 +573,40 @@ export function getAgiByKey(key: AgiKey): AgiDef {
   return found;
 }
 
+
+function pickChidoCasinoAgi(message: string): string | null {
+  const m = String(message || "").toLowerCase();
+
+  const mentionsChido =
+    /\b(chido|casino|apuesta|apuestas|jugada|jugadas|slot|crash|wallet|retiro|retiros|dep[oó]sito|deposito|kyc|bono|bonos|vip|torneo|tournament|astropay|juno)\b/i.test(m);
+
+  if (!mentionsChido) return null;
+
+  if (/\b(memoria|contexto|recuerdas|historial|continuidad|syntia)\b/i.test(m)) return "syntia";
+
+  if (/\b(deploy|hosting|infra|infraestructura|api|endpoint|status|estado|servidor|vercel|pasarela|token|tokens|hostia)\b/i.test(m)) return "hostia";
+
+  if (/\b(seguridad|fraude|riesgo|webhook|firma|hmac|sesion|sesión|ataque|abuso|vertx)\b/i.test(m)) return "vertx";
+
+  if (/\b(legal|licencia|cumplimiento|compliance|privacidad|terminos|términos|jurix|juego responsable|autoexclusi[oó]n|kyc)\b/i.test(m)) return "jurix";
+
+  if (/\b(finanza|finanzas|roi|costo|costos|balance|balances|saldo|saldos|retiro|retiros|dep[oó]sito|deposito|cashflow|numia)\b/i.test(m)) return "numia";
+
+  if (/\b(curvewind|estrategia|crecimiento|reinversi[oó]n|escenario|escenarios|proyecci[oó]n)\b/i.test(m)) return "curvewind";
+
+  if (/\b(chido wins|predicci[oó]n|predecir|simulaci[oó]n|probabilidad|probabilidades|apuesta segura|jugada segura|winrate|odds)\b/i.test(m)) return "chido_wins";
+
+  return "chido_gerente";
+}
+
 export function pickAgi(intent: Intent, message: string): AgiDef {
+  const chidoCasinoAgi = pickChidoCasinoAgi(message);
+  if (chidoCasinoAgi) {
+    const routed = AGIS.find((agi) => agi.id === chidoCasinoAgi);
+    if (routed) return routed;
+  }
+
+
   const m = message.toLowerCase();
 
   if (/(privacidad|contrato|tos|compliance|jur[ií]d|legal|consentimiento)/i.test(m)) return getAgiByKey("JURIX");
