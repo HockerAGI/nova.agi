@@ -18,6 +18,31 @@ function compact(value: string, max = 420): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+
+function syntiaMemoryPriority(type: string): number {
+  if (type === "memory.research_gate") return 100;
+  if (type === "memory.correction") return 95;
+  if (type === "memory.decision") return 90;
+  if (type === "memory.state") return 85;
+  if (type === "memory.next") return 75;
+  if (type === "memory.interaction") return 20;
+  return 50;
+}
+
+function prioritizeSyntiaMemoryItems<T extends { type?: string; created_at?: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const pa = syntiaMemoryPriority(String(a.type || ""));
+    const pb = syntiaMemoryPriority(String(b.type || ""));
+
+    if (pa !== pb) return pb - pa;
+
+    const ta = new Date(String(a.created_at || "")).getTime() || 0;
+    const tb = new Date(String(b.created_at || "")).getTime() || 0;
+
+    return tb - ta;
+  });
+}
+
 export async function loadSyntiaMemory(
   sb: AdminSupabase,
   project_id: string,
@@ -46,7 +71,7 @@ export async function loadSyntiaMemory(
 
     return {
       source: items.length > 0 ? "supabase" : "empty",
-      items,
+      items: prioritizeSyntiaMemoryItems(items),
     };
   } catch {
     return { source: "unavailable", items: [] };
