@@ -381,18 +381,22 @@ function chidoResearchGateReply(message: string): string | null {
 
   if (!mentionsChido || !mentionsResearchGate) return null;
 
-  if (/\b(confirm_deposit|confirmar dep[oó]sito|deposito|depósito)\b/i.test(m)) {
+  if (/\b(confirm_deposit|confirmar dep[oó]sito|deposito|depósito|preflight|execution preflight|preflight_passed)\b/i.test(m)) {
     return [
-      "Armando, el Research Gate ya es una regla oficial activa del ecosistema HOCKER.",
+      "Armando, la cadena completa de Chido Actions ya está definida y validada hasta Execution Preflight.",
       "",
-      "Para Chido Actions, `confirm_deposit` no puede ejecutarse en real ahora. Solo está permitido en modo dry-run.",
+      "Cadena actual:",
+      "Research Gate → dry-run → approval request → guardian approvals → HMAC signature check → execution preflight.",
       "",
-      "Antes de cualquier ejecución real necesita pasar por:",
-      "research_gate, explicit_approval, audit_log, hmac_signature, numia_guardian y vertx_guardian.",
+      "Para `confirm_deposit`, el preflight puede pasar cuando existen:",
+      "research_gate activo, approval request, aprobaciones de NUMIA/VERTX/Chido Gerente, firma HMAC válida y TTL vigente.",
       "",
-      "NUMIA valida la parte financiera, VERTX valida seguridad y riesgo, JURIX valida cumplimiento cuando aplique, y Chido Gerente coordina la operación.",
+      "`preflight_passed` NO significa ejecución real.",
       "",
-      "Estado actual: ejecución real bloqueada. No se confirma ningún depósito real desde Hocker ONE todavía.",
+      "Estado obligatorio actual:",
+      "preflight_passed puede ser true, pero execution_ready sigue false, executed sigue false, real_execution_enabled sigue false y execution_lock sigue true.",
+      "",
+      "Conclusión: Hocker ONE puede validar que la cadena de seguridad está completa, pero todavía no confirma depósitos reales, no mueve dinero y no modifica balances.",
       "",
       "Chido Gerente me apoyó: me ayudó a ordenar la operación de Chido."
     ].join("\n");
