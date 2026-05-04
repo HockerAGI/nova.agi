@@ -372,6 +372,63 @@ function supportWorkSummary(agi: { id: string; name: string; kind: string }): st
 }
 
 
+
+function chidoResearchGateReply(message: string): string | null {
+  const m = String(message || "").toLowerCase();
+
+  const mentionsChido = /\b(chido|casino|chido actions|confirm_deposit|approve_kyc|reject_deposit|pay_withdrawal|modify_balance|execute_bet)\b/i.test(m);
+  const mentionsResearchGate = /\b(research gate|dry-run|dry run|hmac|confirm_deposit|acciones controladas|acción controlada|accion controlada)\b/i.test(m);
+
+  if (!mentionsChido || !mentionsResearchGate) return null;
+
+  if (/\b(confirm_deposit|confirmar dep[oó]sito|deposito|depósito)\b/i.test(m)) {
+    return [
+      "Armando, el Research Gate ya es una regla oficial activa del ecosistema HOCKER.",
+      "",
+      "Para Chido Actions, `confirm_deposit` no puede ejecutarse en real ahora. Solo está permitido en modo dry-run.",
+      "",
+      "Antes de cualquier ejecución real necesita pasar por:",
+      "research_gate, explicit_approval, audit_log, hmac_signature, numia_guardian y vertx_guardian.",
+      "",
+      "NUMIA valida la parte financiera, VERTX valida seguridad y riesgo, JURIX valida cumplimiento cuando aplique, y Chido Gerente coordina la operación.",
+      "",
+      "Estado actual: ejecución real bloqueada. No se confirma ningún depósito real desde Hocker ONE todavía.",
+      "",
+      "Chido Gerente me apoyó: me ayudó a ordenar la operación de Chido."
+    ].join("\n");
+  }
+
+  if (/\b(execute_bet|apuesta|apostar|apuestas)\b/i.test(m)) {
+    return [
+      "Armando, el Research Gate ya es una regla oficial activa del ecosistema HOCKER.",
+      "",
+      "`execute_bet` permanece bloqueado. Chido Wins solo puede apoyar con simulación, riesgo y análisis probabilístico responsable.",
+      "",
+      "No ejecutamos apuestas reales ni prometemos ganancias desde Hocker ONE.",
+      "",
+      "Guardianes: JURIX, VERTX, Chido Wins y NOVA.",
+      "",
+      "Estado actual: bloqueo permanente hasta que exista autorización legal, revisión de riesgo y aprobación ejecutiva."
+    ].join("\n");
+  }
+
+  return [
+    "Armando, el Research Gate ya es una regla oficial activa del ecosistema HOCKER.",
+    "",
+    "Para Chido Actions, las acciones sensibles siguen en modo dry-run. No hay ejecución real habilitada.",
+    "",
+    "Acciones bajo dry-run:",
+    "approve_kyc, confirm_deposit, reject_deposit, pay_withdrawal y modify_balance.",
+    "",
+    "Antes de ejecución real se requiere research_gate, explicit_approval, audit_log, hmac_signature y guardianes activos según el tipo de acción.",
+    "",
+    "Acción bloqueada: execute_bet.",
+    "",
+    "Estado actual: seguridad primero, ejecución real bloqueada."
+  ].join("\n");
+}
+
+
 function humanizeNovaTone(reply: string): string {
   let clean = String(reply || "").trim();
 
@@ -441,6 +498,12 @@ function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind:
   }
 
   clean = humanizeNovaTone(clean);
+
+  const researchGateReply = chidoResearchGateReply(clean);
+  if (researchGateReply) {
+    clean = researchGateReply;
+  }
+
   return clean.replace(/\n{3,}/g, "\n\n").trim();
 }
 
