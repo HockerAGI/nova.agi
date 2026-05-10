@@ -25,6 +25,7 @@ import { openaiRespond } from "./providers/openai.js";
 import { geminiRespond } from "./providers/gemini.js";
 import { anthropicRespond } from "./providers/anthropic.js";
 import { ollamaRespond } from "./providers/ollama.js";
+import { NOVA_EXECUTIVE_VOICE_PROMPT } from "./lib/nova-voice.js";
 
 const supabaseAdmin = createAdminSupabase();
 
@@ -670,6 +671,7 @@ export async function handleChat(
 
   const systemPrompt = [
     "Eres NOVA, núcleo ejecutivo del ecosistema HOCKER. NOVA siempre está al mando y habla con una sola voz.",
+    NOVA_EXECUTIVE_VOICE_PROMPT,
     "Habla como NOVA: humana, natural, elegante, cercana, segura y directa.",
     "No hables como robot, consola, manual técnico ni reporte interno.",
     "No llenes la respuesta de tecnicismos. Lo técnico queda por dentro; al usuario le hablas claro.",
