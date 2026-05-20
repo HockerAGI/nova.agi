@@ -26,6 +26,7 @@ import { geminiRespond } from "./providers/gemini.js";
 import { anthropicRespond } from "./providers/anthropic.js";
 import { ollamaRespond } from "./providers/ollama.js";
 import { NOVA_EXECUTIVE_VOICE_PROMPT } from "./lib/nova-voice.js";
+import { resolveNovaRuntimePolicy } from "./lib/hocker-one-policy.js";
 
 const supabaseAdmin = createAdminSupabase();
 
@@ -635,8 +636,15 @@ export async function handleChat(
   }
 
   const intentDecision = detectIntent(message);
-  const providerOrder = providerOrderForIntent(intentDecision.intent, body.prefer);
-  const provider = providerOrder[0] ?? pickProvider(body.prefer);
+  const runtimePolicy = resolveNovaRuntimePolicy({
+    context_data: body.context_data ?? null,
+    requested_allow_actions: body.allow_actions,
+    requested_prefer: body.prefer,
+    intent: intentDecision.intent,
+  });
+
+  const providerOrder = providerOrderForIntent(intentDecision.intent, runtimePolicy.prefer_effective);
+  const provider = providerOrder[0] ?? pickProvider(runtimePolicy.prefer_effective);
 
   if (providerOrder.length === 0) {
     return reply.status(503).send({
@@ -687,22 +695,25 @@ export async function handleChat(
     `Consumo mensual estimado del motor activo: ${monthlyTokens} tokens.`,
     "Responde con calidez, claridad ejecutiva y sin inventar estado del sistema.",
     "Si no tienes evidencia suficiente, dilo directo.",
-    "Si el usuario pide ejecución y allow_actions=true, puedes devolver JSON con reply y actions.",
+    runtimePolicy.system_prompt_block,
     "Cuando hables con el usuario, no menciones comandos internos salvo que sea necesario. Si falta evidencia, dilo claro y sin adornos.",
-    "Toda escritura debe quedar como needs_approval=true. No intentes ejecutar directo a main ni modificar infraestructura sin aprobación.",
-    "Para GitHub usa únicamente comandos github.*; el sistema los enruta a cloud-hocker-one y crea ramas/PR cuando corresponda.",
-    `Comandos soportados:\n${summarizeSupportedCommands()}`,
+    runtimePolicy.allow_actions_effective
+      ? "Acciones autorizadas por política interna: toda escritura sigue needs_approval=true y jamás se ejecuta directo a main."
+      : "No devuelvas JSON de acciones ni intentes encolar tareas desde nova.agi. Si el usuario pide ejecutar, prepara plan natural y espera el Owner Gate de Hocker ONE.",
+    runtimePolicy.allow_actions_effective
+      ? `Comandos soportados:\n${summarizeSupportedCommands()}`
+      : "Las acciones productivas viven en Hocker ONE mediante agi_action_queue, Queue Lock, pruebas, auditoría y aprobación owner.",
   ].join("\n");
 
   const completion = await completeWithFallback({
     providers: providerOrder,
     messages: buildConversation(systemPrompt, history, message),
-    mode: body.mode,
+    mode: runtimePolicy.mode_effective,
   });
 
   const parsedReply = parseReplyEnvelope(completion.text);
   const replyText = toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi);
-  const deterministicActions = body.allow_actions
+  const deterministicActions = runtimePolicy.allow_actions_effective
     ? [...naturalLocalAgentActions(message), ...naturalGithubActions(message)]
     : [];
 
@@ -710,7 +721,7 @@ export async function handleChat(
 
   let enqueuedActions: ActionItem[] = [];
 
-  if (body.allow_actions && requestedActions.length > 0) {
+  if (runtimePolicy.allow_actions_effective && requestedActions.length > 0) {
     const rows = await enqueueActions(supabaseAdmin, {
       project_id,
       thread_id: thread.id,
@@ -734,6 +745,7 @@ export async function handleChat(
     intent: intentDecision.intent,
     agi_id: agi.id,
     actions_enqueued: enqueuedActions.length,
+    runtime_policy: runtimePolicy.audit_meta,
   });
 
   await recordSyntiaInteraction(supabaseAdmin, {
@@ -757,6 +769,7 @@ export async function handleChat(
     meta: {
       agi_id: agi.id,
       intent: intentDecision.intent,
+      runtime_policy: runtimePolicy.audit_meta,
     },
   });
 
@@ -779,10 +792,13 @@ export async function handleChat(
       controls: {
         allow_write: controls.allow_write,
         requested_actions: body.allow_actions,
+        effective_actions: runtimePolicy.allow_actions_effective,
         enqueued_actions: enqueuedActions.length,
-        action_policy: "strict_allowlist_routed",
-        provider_router: "native_invisible_fallback",
+        action_policy: runtimePolicy.action_policy,
+        provider_router: runtimePolicy.provider_router,
         fallback_used: completion.fallbackUsed,
+        queue_lock: runtimePolicy.queue_lock,
+        runtime_policy: runtimePolicy.audit_meta,
       },
       context_data: body.context_data ?? {},
     },
