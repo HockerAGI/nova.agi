@@ -21,6 +21,7 @@ import { loadSyntiaMemory, recordSyntiaInteraction, syntiaMemoryPromptBlock } fr
 import { enqueueActions } from "./lib/actions.js";
 import { sanitizeNovaAction, summarizeSupportedCommands } from "./lib/command-policy.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
+import { getNovaProviderStatus } from "./lib/provider-status.js";
 import { openaiRespond } from "./providers/openai.js";
 import { geminiRespond } from "./providers/gemini.js";
 import { anthropicRespond } from "./providers/anthropic.js";
@@ -824,6 +825,11 @@ export function buildNovaApp() {
       return reply.code(401).send({ ok: false, error: "Unauthorized" });
     }
   });
+
+
+  app.get("/providers/status", async () => getNovaProviderStatus());
+  app.get("/api/providers/status", async () => getNovaProviderStatus());
+  app.get("/api/v1/providers/status", async () => getNovaProviderStatus());
 
   app.get("/health", async () => ({
     ok: true,
