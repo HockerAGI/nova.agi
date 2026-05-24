@@ -36,6 +36,22 @@ const envSchema = z.object({
   IMAGE_PROVIDER: z.enum(["openai", "gemini", "ollama"]).default("openai"),
   VIDEO_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
   HIDE_PROVIDER_FROM_USER: z.coerce.boolean().default(true),
+
+  OPENAI_MODEL_AUTO: z.string().optional().default(""),
+  OPENAI_MODEL_FAST: z.string().optional().default(""),
+  OPENAI_MODEL_PRO: z.string().optional().default(""),
+  GEMINI_MODEL_AUTO: z.string().optional().default(""),
+  GEMINI_MODEL_FAST: z.string().optional().default(""),
+  GEMINI_MODEL_PRO: z.string().optional().default(""),
+  ANTHROPIC_MODEL_AUTO: z.string().optional().default(""),
+  ANTHROPIC_MODEL_FAST: z.string().optional().default(""),
+  ANTHROPIC_MODEL_PRO: z.string().optional().default(""),
+  OLLAMA_MODEL_AUTO: z.string().optional().default(""),
+  OLLAMA_MODEL_FAST: z.string().optional().default(""),
+  OLLAMA_MODEL_PRO: z.string().optional().default(""),
+
+  NOVA_SURVIVAL_MODE_ENABLED: z.coerce.boolean().default(true),
+  NOVA_SURVIVAL_REPLY: z.string().optional().default(""),
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV === "production" && !String(env.NOVA_ORCHESTRATOR_KEY ?? "").trim()) {
     ctx.addIssue({
@@ -100,6 +116,34 @@ export const config = {
     videoProvider: env.VIDEO_PROVIDER,
     hideProviderFromUser: env.HIDE_PROVIDER_FROM_USER,
   },
+
+  modelOverrides: {
+    openai: {
+      auto: env.OPENAI_MODEL_AUTO,
+      fast: env.OPENAI_MODEL_FAST,
+      pro: env.OPENAI_MODEL_PRO,
+    },
+    gemini: {
+      auto: env.GEMINI_MODEL_AUTO,
+      fast: env.GEMINI_MODEL_FAST,
+      pro: env.GEMINI_MODEL_PRO,
+    },
+    anthropic: {
+      auto: env.ANTHROPIC_MODEL_AUTO,
+      fast: env.ANTHROPIC_MODEL_FAST,
+      pro: env.ANTHROPIC_MODEL_PRO,
+    },
+    ollama: {
+      auto: env.OLLAMA_MODEL_AUTO,
+      fast: env.OLLAMA_MODEL_FAST,
+      pro: env.OLLAMA_MODEL_PRO,
+    },
+  },
+
+  survival: {
+    enabled: env.NOVA_SURVIVAL_MODE_ENABLED,
+    reply: env.NOVA_SURVIVAL_REPLY,
+  },
 };
 
 export function providerReady(provider: "openai" | "gemini" | "anthropic" | "ollama"): boolean {
@@ -110,6 +154,9 @@ export function providerReady(provider: "openai" | "gemini" | "anthropic" | "oll
 }
 
 export function modelFor(provider: "openai" | "gemini" | "anthropic" | "ollama", mode: "auto" | "fast" | "pro") {
+  const override = config.modelOverrides[provider][mode]?.trim();
+  if (override) return override;
+
   if (provider === "openai") {
     return mode === "pro" ? "gpt-4o" : "gpt-4o-mini";
   }
