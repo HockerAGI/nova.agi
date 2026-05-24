@@ -28,6 +28,13 @@ import { anthropicRespond } from "./providers/anthropic.js";
 import { ollamaRespond } from "./providers/ollama.js";
 import { NOVA_EXECUTIVE_VOICE_PROMPT } from "./lib/nova-voice.js";
 import { resolveNovaRuntimePolicy } from "./lib/hocker-one-policy.js";
+import {
+  alwaysOnMeshPublicStatus,
+  buildProviderInvisibleSystemPrompt,
+  buildSurvivalCompletion,
+  scrubProviderLeakage,
+  type NovaAlwaysOnCompletion,
+} from "./lib/always-on-mesh.js";
 
 const supabaseAdmin = createAdminSupabase();
 
@@ -560,14 +567,20 @@ async function completeWithFallback(args: {
   providers: Provider[];
   messages: ChatMessage[];
   mode: CompletionMode;
-}) {
+}): Promise<NovaAlwaysOnCompletion> {
   const failures: Array<{ provider: Provider; reason: string }> = [];
 
   for (const provider of args.providers) {
     try {
       const result = await completeProvider(provider, args.messages, args.mode);
+
+      if (!String(result.text ?? "").trim()) {
+        throw new Error(`${provider} empty_response`);
+      }
+
       return {
         ...result,
+        text: scrubProviderLeakage(result.text),
         fallbackUsed: failures.length > 0,
         internalFailures: failures,
       };
@@ -577,6 +590,15 @@ async function completeWithFallback(args: {
         reason: sanitizeProviderError(error),
       });
     }
+  }
+
+  if (config.survival.enabled) {
+    return buildSurvivalCompletion({
+      providers: args.providers,
+      mode: args.mode,
+      failures,
+      reply: config.survival.reply,
+    });
   }
 
   throw new Error("NOVA no pudo completar la respuesta con los motores disponibles.");
@@ -648,11 +670,7 @@ export async function handleChat(
   const provider = providerOrder[0] ?? pickProvider(runtimePolicy.prefer_effective);
 
   if (providerOrder.length === 0) {
-    return reply.status(503).send({
-      ok: false,
-      error: "NOVA no tiene motores disponibles configurados.",
-      trace_id,
-    });
+    providerOrder.push(pickProvider(runtimePolicy.prefer_effective));
   }
 
   const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision.intent, message);
@@ -680,6 +698,7 @@ export async function handleChat(
 
   const systemPrompt = [
     "Eres NOVA, núcleo ejecutivo del ecosistema HOCKER. NOVA siempre está al mando y habla con una sola voz.",
+    buildProviderInvisibleSystemPrompt(),
     NOVA_EXECUTIVE_VOICE_PROMPT,
     "Habla como NOVA: humana, natural, elegante, cercana, segura y directa.",
     "No hables como robot, consola, manual técnico ni reporte interno.",
@@ -698,6 +717,7 @@ export async function handleChat(
     "Si no tienes evidencia suficiente, dilo directo.",
     runtimePolicy.system_prompt_block,
     "Cuando hables con el usuario, no menciones comandos internos salvo que sea necesario. Si falta evidencia, dilo claro y sin adornos.",
+    "No menciones cambios de proveedor, modelos, créditos, cuotas, billing, fallback ni detalles de infraestructura interna.",
     runtimePolicy.allow_actions_effective
       ? "Acciones autorizadas por política interna: toda escritura sigue needs_approval=true y jamás se ejecuta directo a main."
       : "No devuelvas JSON de acciones ni intentes encolar tareas desde nova.agi. Si el usuario pide ejecutar, prepara plan natural y espera el Owner Gate de Hocker ONE.",
@@ -713,7 +733,7 @@ export async function handleChat(
   });
 
   const parsedReply = parseReplyEnvelope(completion.text);
-  const replyText = toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi);
+  const replyText = scrubProviderLeakage(toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi));
   const deterministicActions = runtimePolicy.allow_actions_effective
     ? [...naturalLocalAgentActions(message), ...naturalGithubActions(message)]
     : [];
@@ -747,6 +767,8 @@ export async function handleChat(
     agi_id: agi.id,
     actions_enqueued: enqueuedActions.length,
     runtime_policy: runtimePolicy.audit_meta,
+    provider_failures: completion.internalFailures ?? [],
+    survival_mode: completion.survivalMode === true,
   });
 
   await recordSyntiaInteraction(supabaseAdmin, {
@@ -771,6 +793,8 @@ export async function handleChat(
       agi_id: agi.id,
       intent: intentDecision.intent,
       runtime_policy: runtimePolicy.audit_meta,
+      provider_failures: completion.internalFailures ?? [],
+      survival_mode: completion.survivalMode === true,
     },
   });
 
@@ -798,6 +822,8 @@ export async function handleChat(
         action_policy: runtimePolicy.action_policy,
         provider_router: runtimePolicy.provider_router,
         fallback_used: completion.fallbackUsed,
+        survival_mode: completion.survivalMode === true,
+        provider_failures: completion.internalFailures ?? [],
         queue_lock: runtimePolicy.queue_lock,
         runtime_policy: runtimePolicy.audit_meta,
       },
@@ -826,6 +852,10 @@ export function buildNovaApp() {
     }
   });
 
+
+  app.get("/mesh/status", async () => alwaysOnMeshPublicStatus());
+  app.get("/api/mesh/status", async () => alwaysOnMeshPublicStatus());
+  app.get("/api/v1/mesh/status", async () => alwaysOnMeshPublicStatus());
 
   app.get("/providers/status", async () => getNovaProviderStatus());
   app.get("/api/providers/status", async () => getNovaProviderStatus());

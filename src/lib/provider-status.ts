@@ -1,7 +1,7 @@
 import { config, modelFor, providerReady } from "../config.js";
 import type { CompletionMode, Intent, Provider } from "../types.js";
 
-export const NOVA_PROVIDER_STATUS_VERSION = "12.7L-2C-A";
+export const NOVA_PROVIDER_STATUS_VERSION = "12.7M-1";
 
 const PROVIDERS: Provider[] = ["openai", "gemini", "anthropic", "ollama"];
 const MODES: CompletionMode[] = ["auto", "fast", "pro"];
@@ -69,6 +69,8 @@ export function getNovaProviderStatus() {
       nova_decides_provider_internally: true,
       user_selects_provider: false,
       provider_names_hidden_from_user: config.providerRouting.hideProviderFromUser,
+      provider_switch_invisible: true,
+      no_credit_or_quota_mentions: true,
       public_voice: "NOVA",
     },
     orders: {
@@ -88,6 +90,12 @@ export function getNovaProviderStatus() {
       },
     },
     providers,
+    always_on_mesh: {
+      version: "12.7M-1",
+      survival_mode_enabled: config.survival.enabled,
+      user_visible: false,
+      provider_switch_invisible: true,
+    },
     execution_policy: {
       productive_actions_from_nova_agi: false,
       owner_gate_lives_in_hocker_one: true,
