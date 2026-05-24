@@ -95,3 +95,43 @@ export function alwaysOnMeshPublicStatus() {
     },
   };
 }
+
+
+export function shouldExposeInternalMeta(): boolean {
+  return process.env.NOVA_EXPOSE_INTERNAL_META === "true";
+}
+
+const INTERNAL_PUBLIC_META_KEYS = new Set([
+  "provider",
+  "model",
+  "provider_router",
+  "provider_failures",
+  "fallback_used",
+  "survival_mode",
+  "internalFailures",
+  "survivalMode",
+]);
+
+function cloakInternalMetaValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloakInternalMetaValue(item));
+  }
+
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (INTERNAL_PUBLIC_META_KEYS.has(key)) continue;
+      out[key] = cloakInternalMetaValue(item);
+    }
+
+    return out;
+  }
+
+  return value;
+}
+
+export function cloakPublicCompletionPayload<T extends Record<string, unknown>>(payload: T): T {
+  if (shouldExposeInternalMeta()) return payload;
+  return cloakInternalMetaValue(payload) as T;
+}

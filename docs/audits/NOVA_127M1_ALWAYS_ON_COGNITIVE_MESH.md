@@ -24,3 +24,9 @@ Blindar NOVA para que el cambio de proveedor sea invisible para el usuario y la 
 ## Regla de oro
 
 NOVA mantiene una sola voz pública. Los detalles técnicos quedan en metadata interna.
+
+## 12.7M-1B — Public Response Metadata Cloak
+
+Public chat responses hide provider/model/fallback metadata by default through an `onSend` cloak hook for `/chat`, `/api/chat` and `/api/v1/chat`.
+
+Internal debugging can expose it only when `NOVA_EXPOSE_INTERNAL_META=true`.

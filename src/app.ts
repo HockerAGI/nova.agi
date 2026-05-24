@@ -32,6 +32,7 @@ import {
   alwaysOnMeshPublicStatus,
   buildProviderInvisibleSystemPrompt,
   buildSurvivalCompletion,
+  cloakPublicCompletionPayload,
   scrubProviderLeakage,
   type NovaAlwaysOnCompletion,
 } from "./lib/always-on-mesh.js";
@@ -836,6 +837,35 @@ export async function handleChat(
 
 export function buildNovaApp() {
   const app = Fastify({ logger: true });
+
+  const NOVA_PUBLIC_CHAT_RESPONSE_CLOAK_PATHS = new Set(["/chat", "/api/chat", "/api/v1/chat"]);
+
+  app.addHook("onSend", async (request, _reply, payload) => {
+    const path = request.url.split("?")[0] || "";
+
+    if (request.method !== "POST" || !NOVA_PUBLIC_CHAT_RESPONSE_CLOAK_PATHS.has(path)) {
+      return payload;
+    }
+
+    if (typeof payload !== "string" && !Buffer.isBuffer(payload)) {
+      return payload;
+    }
+
+    const raw = Buffer.isBuffer(payload) ? payload.toString("utf8") : payload;
+
+    try {
+      const parsed = JSON.parse(raw);
+
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return payload;
+      }
+
+      return JSON.stringify(cloakPublicCompletionPayload(parsed as Record<string, unknown>));
+    } catch {
+      return payload;
+    }
+  });
+
 
   void app.register(cors, {
     origin: true,
