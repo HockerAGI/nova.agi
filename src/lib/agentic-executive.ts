@@ -1,16 +1,29 @@
+import { randomUUID } from "node:crypto";
 import { signCommand } from "./security.js";
-export const AGENTIC_EXEC_VERSION = "2.3.0-PHASE13";
+export const AGENTIC_EXEC_VERSION = "2.3.1-STABLE";
 
 export async function executeAutonomousAction(actionType: string, payload: any, targetNode = "hocker-node-1") {
-  // Protocolo OODA: Decidir -> Firmar -> Actuar
-  const timestamp = Date.now();
-  const signature = signCommand(payload, process.env.HOCKER_COMMAND_HMAC_SECRET!, timestamp);
+  const timestamp = new Date().toISOString();
+  const id = randomUUID();
+  const project_id = process.env.HOCKER_PROJECT_ID || "hocker-one";
+  const secret = process.env.HOCKER_COMMAND_HMAC_SECRET!;
 
-  console.log(`[AGENTIC] Ejecutando: ${actionType} en ${targetNode}`);
+  // Firma de 7 argumentos requerida por el protocolo de seguridad Hocker
+  const signature = signCommand(
+    secret, 
+    id, 
+    project_id, 
+    targetNode, 
+    actionType, 
+    payload, 
+    timestamp
+  );
+
+  console.log(`[AGENTIC] Acción firmada y despachada: ${actionType}`);
   
-  // Aquí NOVA enruta hacia el nodo físico o API externa
   return {
     status: "dispatched",
+    id,
     action: actionType,
     node: targetNode,
     signature,
