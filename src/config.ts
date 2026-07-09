@@ -52,6 +52,25 @@ const envSchema = z.object({
 
   NOVA_SURVIVAL_MODE_ENABLED: z.coerce.boolean().default(true),
   NOVA_SURVIVAL_REPLY: z.string().optional().default(""),
+
+  // ── MCP Connectors ──────────────────────────────────────────
+  // GitHub
+  GITHUB_TOKEN: z.string().optional(),
+  HOCKER_GITHUB_TOKEN: z.string().optional(),
+  GH_TOKEN: z.string().optional(),
+  // Vercel
+  VERCEL_TOKEN: z.string().optional(),
+  HOCKER_VERCEL_TOKEN: z.string().optional(),
+  VERCEL_TEAM_ID: z.string().optional(),
+  HOCKER_VERCEL_TEAM_ID: z.string().optional(),
+  // OpenAI (MCP — additional capabilities beyond chat)
+  HOCKER_OPENAI_API_KEY: z.string().optional(),
+  OPENAI_ORG_ID: z.string().optional(),
+  // MCP master switch
+  MCP_ENABLED: z.coerce.boolean().default(true),
+  // Mirror node
+  NOVA_MIRROR_NODE_ENABLED: z.coerce.boolean().default(true),
+  NOVA_MIRROR_NODE_ID: z.string().default("nova-mirror-1"),
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV === "production" && !String(env.NOVA_ORCHESTRATOR_KEY ?? "").trim()) {
     ctx.addIssue({
@@ -143,6 +162,26 @@ export const config = {
   survival: {
     enabled: env.NOVA_SURVIVAL_MODE_ENABLED,
     reply: env.NOVA_SURVIVAL_REPLY,
+  },
+
+  mcp: {
+    enabled: env.MCP_ENABLED,
+    github: {
+      token: env.GITHUB_TOKEN ?? env.HOCKER_GITHUB_TOKEN ?? env.GH_TOKEN ?? "",
+    },
+    vercel: {
+      token: env.VERCEL_TOKEN ?? env.HOCKER_VERCEL_TOKEN ?? "",
+      teamId: env.VERCEL_TEAM_ID ?? env.HOCKER_VERCEL_TEAM_ID ?? "",
+    },
+    openai: {
+      apiKey: env.HOCKER_OPENAI_API_KEY ?? env.OPENAI_API_KEY ?? "",
+      orgId: env.OPENAI_ORG_ID ?? "",
+    },
+  },
+
+  mirrorNode: {
+    enabled: env.NOVA_MIRROR_NODE_ENABLED,
+    nodeId: env.NOVA_MIRROR_NODE_ID,
   },
 };
 

@@ -14,6 +14,7 @@ import type {
   JsonObject,
   Provider,
 } from "./types.js";
+import type { AgiKey } from "./types.js";
 import { createAdminSupabase } from "./lib/supabase.js";
 import { ensureThread, appendMessage, loadThreadMessages } from "./lib/memory.js";
 import { pickAgiFromRegistry, registryPromptBlock } from "./lib/agi-registry.js";
@@ -36,6 +37,9 @@ import {
   scrubProviderLeakage,
   type NovaAlwaysOnCompletion,
 } from "./lib/always-on-mesh.js";
+import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
+import { integrateMcpToolCalls, mcpToolsPromptBlock, mcpStatus, formatToolResultsForUser } from "./lib/mcp-tool-calling.js";
+import { iaIaPromptBlock, requestCooperation, sendAgiMessage } from "./lib/ia-ia-protocol.js";
 
 const supabaseAdmin = createAdminSupabase();
 
@@ -725,6 +729,9 @@ export async function handleChat(
     runtimePolicy.allow_actions_effective
       ? `Comandos soportados:\n${summarizeSupportedCommands()}`
       : "Las acciones productivas viven en Hocker ONE mediante agi_action_queue, Queue Lock, pruebas, auditoría y aprobación owner.",
+    mcpToolsPromptBlock(),
+    "Si necesitas información real del sistema (base de datos, repositorios, despliegues), puedes pedir herramientas MCP. Las herramientas de solo lectura se ejecutan directo; las que modifican requieren aprobación de Hocker ONE.",
+    iaIaPromptBlock(),
   ].join("\n");
 
   const completion = await completeWithFallback({
@@ -740,6 +747,27 @@ export async function handleChat(
     : [];
 
   const requestedActions = deterministicActions.length > 0 ? deterministicActions : parsedReply.actions;
+
+  // ── MCP Tool Calling ───────────────────────────────────────
+  // Parse and execute any MCP tool calls from the LLM reply.
+  // Read-only tools execute directly; mutating tools are deferred
+  // to the Hocker ONE approval chain.
+  const mcpIntegration = await integrateMcpToolCalls(completion.text, {
+    allowActions: runtimePolicy.allow_actions_effective,
+  }).catch((err) => {
+    console.warn(`[NOVA MCP] tool-call integration error: ${err instanceof Error ? err.message : "unknown"}`);
+    return null;
+  });
+
+  // If MCP tools were called and returned results, append a summary
+  // to the reply so the user sees what happened
+  let finalReply = replyText;
+  if (mcpIntegration && mcpIntegration.toolCallsParsed > 0) {
+    const toolSummary = formatToolResultsForUser(mcpIntegration.results);
+    if (toolSummary) {
+      finalReply = `${replyText}\n\n${toolSummary}`;
+    }
+  }
 
   let enqueuedActions: ActionItem[] = [];
 
@@ -760,7 +788,7 @@ export async function handleChat(
     }));
   }
 
-  await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", replyText, {
+  await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", finalReply, {
     trace_id,
     provider: completion.provider,
     model: completion.model,
@@ -770,6 +798,9 @@ export async function handleChat(
     runtime_policy: runtimePolicy.audit_meta,
     provider_failures: completion.internalFailures ?? [],
     survival_mode: completion.survivalMode === true,
+    mcp_tool_calls: mcpIntegration?.toolCallsParsed ?? 0,
+    mcp_tool_executed: mcpIntegration?.toolCallsExecuted ?? 0,
+    mcp_tool_deferred: mcpIntegration?.toolCallsDeferred ?? 0,
   });
 
   await recordSyntiaInteraction(supabaseAdmin, {
@@ -779,7 +810,7 @@ export async function handleChat(
     intent: intentDecision.intent,
     agi_id: agi.id,
     user_message: message,
-    reply: replyText,
+    reply: finalReply,
   }).catch(() => undefined);
 
   await recordUsage({
@@ -807,7 +838,7 @@ export async function handleChat(
     model: completion.model,
     intent: intentDecision.intent,
     agi_id: agi.id,
-    reply: replyText,
+    reply: finalReply,
     actions: enqueuedActions,
     trace_id,
     meta: {
@@ -815,6 +846,14 @@ export async function handleChat(
       agi_registry: registryDecision.source,
       syntia_memory: syntiaMemory.source,
       syntia_memory_items: syntiaMemory.items.length,
+      mcp: mcpIntegration
+        ? {
+            tools_available: mcpIntegration.toolsAvailable,
+            tool_calls_parsed: mcpIntegration.toolCallsParsed,
+            tool_calls_executed: mcpIntegration.toolCallsExecuted,
+            tool_calls_deferred: mcpIntegration.toolCallsDeferred,
+          }
+        : null,
       controls: {
         allow_write: controls.allow_write,
         requested_actions: body.allow_actions,
@@ -833,6 +872,33 @@ export async function handleChat(
   };
 
   return reply.status(200).send(payload);
+}
+
+async function sendAgiMessageEndpoint(body: Record<string, unknown>): Promise<{ ok: boolean; message_id: string | null; error?: string }> {
+  const from_agi = String(body.from_agi ?? "NOVA");
+  const to_agi = String(body.to_agi ?? "");
+  const subject = String(body.subject ?? "");
+  const msgBody = String(body.body ?? "");
+
+  if (!to_agi || !subject) {
+    return { ok: false, message_id: null, error: "to_agi and subject are required" };
+  }
+
+  const context = body.context && typeof body.context === "object" && !Array.isArray(body.context)
+    ? (body.context as JsonObject)
+    : undefined;
+
+  return sendAgiMessage({
+    from_agi: from_agi as AgiKey,
+    to_agi: to_agi as AgiKey,
+    type: (body.type as "request" | "response" | "inform" | "alert" | "coordination" | "handoff") ?? "inform",
+    priority: (body.priority as "low" | "normal" | "high" | "critical") ?? "normal",
+    subject,
+    body: msgBody,
+    context,
+    requires_response: Boolean(body.requires_response),
+    project_id: String(body.project_id ?? "hocker-one"),
+  });
 }
 
 export function buildNovaApp() {
@@ -887,9 +953,43 @@ export function buildNovaApp() {
   app.get("/api/mesh/status", async () => alwaysOnMeshPublicStatus());
   app.get("/api/v1/mesh/status", async () => alwaysOnMeshPublicStatus());
 
+  app.get("/mcp/status", async () => mcpStatus());
+  app.get("/api/mcp/status", async () => mcpStatus());
+  app.get("/api/v1/mcp/status", async () => {
+    const registry = getMcpRegistry();
+    return registry.getStatus();
+  });
+
+  app.get("/mcp/tools", async () => {
+    const registry = getMcpRegistry();
+    return { tools: registry.getConnectedTools(), total: registry.getStatus().totalTools };
+  });
+  app.get("/api/mcp/tools", async () => {
+    const registry = getMcpRegistry();
+    return { tools: registry.getConnectedTools(), total: registry.getStatus().totalTools };
+  });
+
   app.get("/providers/status", async () => getNovaProviderStatus());
   app.get("/api/providers/status", async () => getNovaProviderStatus());
   app.get("/api/v1/providers/status", async () => getNovaProviderStatus());
+
+  // ── IA↔IA Communication Protocol ───────────────────────────
+  app.post("/agi/message", async (request, reply) => {
+    const body = request.body as Record<string, unknown>;
+    if (!body || typeof body !== "object") {
+      return reply.status(400).send({ ok: false, error: "Invalid body" });
+    }
+    const result = await sendAgiMessageEndpoint(body);
+    return reply.status(result.ok ? 200 : 500).send(result);
+  });
+  app.post("/api/agi/message", async (request, reply) => {
+    const body = request.body as Record<string, unknown>;
+    if (!body || typeof body !== "object") {
+      return reply.status(400).send({ ok: false, error: "Invalid body" });
+    }
+    const result = await sendAgiMessageEndpoint(body);
+    return reply.status(result.ok ? 200 : 500).send(result);
+  });
 
   app.get("/health", async () => ({
     ok: true,
@@ -907,6 +1007,20 @@ export function buildNovaApp() {
 
 export async function startServer() {
   const app = buildNovaApp();
+
+  // Initialize MCP connectors in the background — non-blocking
+  // so the server starts even if external services are slow/unavailable
+  getMcpRegistry()
+    .initializeAll()
+    .then((status) => {
+      app.log.info(
+        `[NOVA MCP] ${status.connectedProviders}/${status.providers.length} providers connected, ${status.totalTools} tools available`,
+      );
+    })
+    .catch((err) => {
+      app.log.warn(`[NOVA MCP] initialization error: ${err instanceof Error ? err.message : "unknown"}`);
+    });
+
   await app.listen({ port: config.port, host: "0.0.0.0" });
   app.log.info(`[NOVA AGI] listening on ${config.port}`);
 }
