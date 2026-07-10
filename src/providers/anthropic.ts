@@ -5,7 +5,10 @@ export async function anthropicRespond(args: {
   model: string;
   messages: ChatMessage[];
   timeoutMs: number;
+  maxTokens?: number;
 }): Promise<CompletionResult> {
+  if (!args.apiKey?.trim()) throw new Error("Anthropic API key is empty or missing");
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), args.timeoutMs);
 
@@ -28,7 +31,7 @@ export async function anthropicRespond(args: {
       },
       body: JSON.stringify({
         model: args.model,
-        max_tokens: 2048,
+        max_tokens: args.maxTokens ?? 4096,
         system,
         messages: userMessages
       })
