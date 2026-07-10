@@ -31,6 +31,7 @@ import { openaiRespond } from "./providers/openai.js";
 import { geminiRespond } from "./providers/gemini.js";
 import { anthropicRespond } from "./providers/anthropic.js";
 import { ollamaRespond } from "./providers/ollama.js";
+import { base44Respond } from "./providers/base44.js";
 import { NOVA_EXECUTIVE_VOICE_PROMPT } from "./lib/nova-voice.js";
 import { resolveNovaRuntimePolicy } from "./lib/hocker-one-policy.js";
 import {
@@ -55,7 +56,7 @@ const ChatSchema = z
     text: z.string().min(1).optional(),
     user_id: z.string().nullable().optional(),
     user_email: z.string().email().nullable().optional(),
-    prefer: z.enum(["auto", "openai", "gemini", "anthropic", "ollama"]).default("auto"),
+    prefer: z.enum(["auto", "openai", "gemini", "anthropic", "ollama", "base44"]).default("auto"),
     mode: z.enum(["auto", "fast", "pro"]).default("auto"),
     allow_actions: z.boolean().default(false),
     context_data: z.record(z.unknown()).nullable().optional(),
@@ -77,6 +78,7 @@ function pickProvider(prefer: string | undefined): Provider {
   if (p === "gemini" && providerReady("gemini")) return "gemini";
   if (p === "anthropic" && providerReady("anthropic")) return "anthropic";
   if (p === "ollama" && providerReady("ollama")) return "ollama";
+  if (p === "base44" && providerReady("base44")) return "base44";
 
   for (const candidate of config.providerRouting.fallbacks) {
     if (providerReady(candidate)) return candidate;
@@ -101,7 +103,8 @@ function providerOrderForIntent(intent: Intent, prefer: string | undefined): Pro
     (requested === "openai" ||
       requested === "gemini" ||
       requested === "anthropic" ||
-      requested === "ollama") &&
+      requested === "ollama" ||
+      requested === "base44") &&
     providerReady(requested)
   ) {
     order.push(requested);
@@ -559,6 +562,15 @@ async function completeProvider(
     return anthropicRespond({
       apiKey: config.anthropic.apiKey,
       model: modelFor("anthropic", mode),
+      messages,
+      timeoutMs,
+    });
+  }
+
+  if (provider === "base44") {
+    return base44Respond({
+      apiKey: config.base44.apiKey,
+      model: modelFor("base44", mode),
       messages,
       timeoutMs,
     });
