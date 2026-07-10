@@ -85,5 +85,5 @@ export function summarizeSupportedCommands(): string {
     `Escritura/aprobación: ${WRITE_COMMANDS.join(", ")}`,
     `Ruta GitHub: ${CLOUD_COMMAND_NODE_ID}`,
     `Ruta local/sandbox: ${LOCAL_COMMAND_NODE_ID}`,
-  ].join("\\n");
+  ].join("\n");
 }
