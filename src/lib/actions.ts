@@ -181,6 +181,7 @@ export async function approveAction(
     .update({
       status: "queued",
       needs_approval: false,
+      approved_by: approved_by,
       approved_at: now,
       finished_at: null,
       error: null,
