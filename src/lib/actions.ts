@@ -117,7 +117,7 @@ export async function enqueueActions(
       throw new Error(`Comando no soportado por política NOVA: ${action.command}`);
     }
 
-    const node_id = routeNodeForCommand(action.command);
+    const node_id = defaultNodeId(args.node_id, routeNodeForCommand(action.command));
     const payload = (action.payload ?? {}) as JsonObject;
     const id = randomUUID();
     const needsApproval = args.needsApproval || action.needs_approval === true || isWriteCommand(action.command);
@@ -181,7 +181,7 @@ export async function approveAction(
     .update({
       status: "queued",
       needs_approval: false,
-      approved_by: approved_by,
+      approval_note: `Approved by ${approved_by}`,
       approved_at: now,
       finished_at: null,
       error: null,
@@ -211,6 +211,7 @@ export async function rejectAction(
     .update({
       status: "canceled",
       needs_approval: false,
+      rejection_note: `Rejected by ${rejected_by}`,
       approved_at: null,
       error: `Rejected by ${rejected_by}`,
       finished_at: now,
