@@ -2,7 +2,7 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
-export type Provider = "openai" | "gemini" | "anthropic" | "ollama";
+export type Provider = "openai" | "gemini" | "anthropic" | "ollama" | "base44";
 export type CompletionMode = "auto" | "fast" | "pro";
 export type Intent = "general" | "code" | "ops" | "research" | "finance" | "social";
 export type Role = "system" | "user" | "assistant" | "tool" | "nova";
