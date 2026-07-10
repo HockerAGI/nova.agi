@@ -6,6 +6,8 @@ export async function geminiRespond(args: {
   messages: ChatMessage[];
   timeoutMs: number;
 }): Promise<CompletionResult> {
+  if (!args.apiKey?.trim()) throw new Error("Gemini API key is empty or missing");
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), args.timeoutMs);
 
