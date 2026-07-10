@@ -20,6 +20,10 @@ import { ensureThread, appendMessage, loadThreadMessages } from "./lib/memory.js
 import { pickAgiFromRegistry, registryPromptBlock } from "./lib/agi-registry.js";
 import { loadSyntiaMemory, recordSyntiaInteraction, syntiaMemoryPromptBlock } from "./lib/syntia-memory.js";
 import { enqueueActions } from "./lib/actions.js";
+import { safeBearerEquals } from "./lib/security.js";
+import { jurixPublicRoutes } from "./routes/jurix-public.js";
+import { getLangfuseClient } from "./lib/telemetry.js";
+import { budgetCap } from "./lib/router.js";
 import { sanitizeNovaAction, summarizeSupportedCommands } from "./lib/command-policy.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { getNovaProviderStatus } from "./lib/provider-status.js";
@@ -653,6 +657,12 @@ export async function handleChat(
   const project_id = body.project_id.trim();
   const message = String(body.message ?? body.text ?? "").trim();
   const trace_id = randomUUID();
+  const langfuse = getLangfuseClient();
+  const lfTrace = langfuse?.trace({
+    id: trace_id,
+    name: "nova.chat",
+    metadata: { project_id, intent: message.slice(0, 80) },
+  });
   const controls = await getControls(project_id);
 
   if (controls.kill_switch) {
@@ -733,6 +743,16 @@ export async function handleChat(
     "Si necesitas información real del sistema (base de datos, repositorios, despliegues), puedes pedir herramientas MCP. Las herramientas de solo lectura se ejecutan directo; las que modifican requieren aprobación de Hocker ONE.",
     iaIaPromptBlock(),
   ].join("\n");
+
+  const monthlyBudgetCap = budgetCap(provider);
+  if (monthlyTokens >= monthlyBudgetCap) {
+    return reply.status(429).send({
+      ok: false,
+      error: "Budget cap reached for provider. Please try again later.",
+      trace_id,
+      provider,
+    });
+  }
 
   const completion = await completeWithFallback({
     providers: providerOrder,
@@ -871,6 +891,11 @@ export async function handleChat(
     },
   };
 
+  if (lfTrace) {
+    lfTrace.event({ name: "chat.completed", metadata: { provider: completion.provider, model: completion.model } });
+    langfuse?.shutdownAsync?.();
+  }
+
   return reply.status(200).send(payload);
 }
 
@@ -934,7 +959,7 @@ export function buildNovaApp() {
 
 
   void app.register(cors, {
-    origin: true,
+    origin: process.env.NOVA_ALLOWED_ORIGINS?.split(",") ?? ["https://hockerone.vercel.app", "https://hocker.one"],
   });
 
   app.addHook("preHandler", async (req, reply) => {
@@ -943,7 +968,7 @@ export function buildNovaApp() {
     if (!config.orchestratorKey) return;
 
     const auth = req.headers.authorization;
-    if (!auth || auth !== `Bearer ${config.orchestratorKey}`) {
+    if (!auth || !safeBearerEquals(auth, `Bearer ${config.orchestratorKey}`)) {
       return reply.code(401).send({ ok: false, error: "Unauthorized" });
     }
   });
@@ -996,6 +1021,8 @@ export function buildNovaApp() {
     service: "nova.agi",
     ts: new Date().toISOString(),
   }));
+
+  void jurixPublicRoutes(app);
 
   app.post("/chat", handleChat);
   app.post("/api/chat", handleChat);
