@@ -88,10 +88,10 @@ class McpRegistry {
     for (const [id, connector] of this.connectors) {
       for (const tool of connector.getTools()) {
         handles.push({
-          provider: id,
-          tool: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
+          provider: String(id),
+          tool: String(tool.name),
+          description: String((tool as Partial<McpToolSchema>).description ?? ""),
+          inputSchema: ((tool as Partial<McpToolSchema>).inputSchema ?? {}) as Record<string, unknown>,
         });
       }
     }
