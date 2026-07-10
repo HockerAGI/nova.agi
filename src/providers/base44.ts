@@ -27,12 +27,14 @@ type Base44ChatResponse = {
  */
 function extractLastUserMessage(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      return messages[i].content;
+    const message = messages[i];
+    if (message?.role === "user") {
+      return message.content;
     }
   }
+
   // Fallback: use the last message regardless of role
-  const last = messages[messages.length - 1];
+  const last = messages.at(-1);
   return last?.content ?? "";
 }
 
