@@ -16,6 +16,7 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  BASE44_API_KEY: z.string().optional(),
   OLLAMA_ENABLED: z.coerce.boolean().default(false),
   OLLAMA_BASE_URL: z.string().default("http://127.0.0.1:11434"),
 
@@ -28,11 +29,11 @@ const envSchema = z.object({
   LANGFUSE_SECRET_KEY: z.string().optional().default(""),
   LANGFUSE_BASE_URL: z.string().url().default("https://cloud.langfuse.com"),
 
-  DEFAULT_PROVIDER: z.enum(["openai", "gemini", "anthropic", "ollama"]).default("openai"),
-  PROVIDER_FALLBACKS: z.string().default("openai,gemini,anthropic,ollama"),
-  TEXT_PROVIDER_ORDER: z.string().default("openai,gemini,anthropic,ollama"),
-  CODE_PROVIDER_ORDER: z.string().default("openai,anthropic,gemini,ollama"),
-  LONG_CONTEXT_PROVIDER_ORDER: z.string().default("gemini,openai,anthropic,ollama"),
+  DEFAULT_PROVIDER: z.enum(["openai", "gemini", "anthropic", "ollama", "base44"]).default("openai"),
+  PROVIDER_FALLBACKS: z.string().default("openai,gemini,anthropic,ollama,base44"),
+  TEXT_PROVIDER_ORDER: z.string().default("openai,gemini,anthropic,ollama,base44"),
+  CODE_PROVIDER_ORDER: z.string().default("openai,anthropic,gemini,ollama,base44"),
+  LONG_CONTEXT_PROVIDER_ORDER: z.string().default("gemini,openai,anthropic,ollama,base44"),
   IMAGE_PROVIDER: z.enum(["openai", "gemini", "ollama"]).default("openai"),
   VIDEO_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
   HIDE_PROVIDER_FROM_USER: z.coerce.boolean().default(true),
@@ -49,6 +50,9 @@ const envSchema = z.object({
   OLLAMA_MODEL_AUTO: z.string().optional().default(""),
   OLLAMA_MODEL_FAST: z.string().optional().default(""),
   OLLAMA_MODEL_PRO: z.string().optional().default(""),
+  BASE44_MODEL_AUTO: z.string().optional().default(""),
+  BASE44_MODEL_FAST: z.string().optional().default(""),
+  BASE44_MODEL_PRO: z.string().optional().default(""),
 
   NOVA_SURVIVAL_MODE_ENABLED: z.coerce.boolean().default(true),
   NOVA_SURVIVAL_REPLY: z.string().optional().default(""),
@@ -83,12 +87,12 @@ const envSchema = z.object({
 
 const env = envSchema.parse(process.env);
 
-function parseProviderOrder(value: string): Array<"openai" | "gemini" | "anthropic" | "ollama"> {
-  const allowed = new Set(["openai", "gemini", "anthropic", "ollama"]);
+function parseProviderOrder(value: string): Array<"openai" | "gemini" | "anthropic" | "ollama" | "base44"> {
+  const allowed = new Set(["openai", "gemini", "anthropic", "ollama", "base44"]);
   const order = value
     .split(",")
     .map((item) => item.trim().toLowerCase())
-    .filter((item): item is "openai" | "gemini" | "anthropic" | "ollama" => allowed.has(item));
+    .filter((item): item is "openai" | "gemini" | "anthropic" | "ollama" | "base44" => allowed.has(item));
 
   return order.length > 0 ? order : ["openai", "gemini", "anthropic", "ollama"];
 }
@@ -109,6 +113,7 @@ export const config = {
   openai: { apiKey: env.OPENAI_API_KEY ?? "" },
   gemini: { apiKey: env.GEMINI_API_KEY ?? "" },
   anthropic: { apiKey: env.ANTHROPIC_API_KEY ?? "" },
+  base44: { apiKey: env.BASE44_API_KEY ?? "" },
   ollama: {
     enabled: env.OLLAMA_ENABLED,
     baseUrl: env.OLLAMA_BASE_URL,
@@ -157,6 +162,11 @@ export const config = {
       fast: env.OLLAMA_MODEL_FAST,
       pro: env.OLLAMA_MODEL_PRO,
     },
+    base44: {
+      auto: env.BASE44_MODEL_AUTO,
+      fast: env.BASE44_MODEL_FAST,
+      pro: env.BASE44_MODEL_PRO,
+    },
   },
 
   survival: {
@@ -185,14 +195,15 @@ export const config = {
   },
 };
 
-export function providerReady(provider: "openai" | "gemini" | "anthropic" | "ollama"): boolean {
+export function providerReady(provider: "openai" | "gemini" | "anthropic" | "ollama" | "base44"): boolean {
   if (provider === "ollama") return Boolean(config.ollama.enabled);
   if (provider === "openai") return Boolean(config.openai.apiKey);
   if (provider === "gemini") return Boolean(config.gemini.apiKey);
+  if (provider === "base44") return Boolean(config.base44.apiKey);
   return Boolean(config.anthropic.apiKey);
 }
 
-export function modelFor(provider: "openai" | "gemini" | "anthropic" | "ollama", mode: "auto" | "fast" | "pro") {
+export function modelFor(provider: "openai" | "gemini" | "anthropic" | "ollama" | "base44", mode: "auto" | "fast" | "pro") {
   const override = config.modelOverrides[provider][mode]?.trim();
   if (override) return override;
 
@@ -204,6 +215,10 @@ export function modelFor(provider: "openai" | "gemini" | "anthropic" | "ollama",
   }
   if (provider === "anthropic") {
     return mode === "pro" ? "claude-3-5-sonnet-latest" : "claude-3-5-haiku-latest";
+  }
+  if (provider === "base44") {
+    // Base44 manages model selection internally; these are labels only
+    return mode === "pro" ? "base44-pro" : mode === "fast" ? "base44-fast" : "base44-auto";
   }
   return mode === "pro" ? "llama3.1:70b" : "llama3.1:8b";
 }
