@@ -140,6 +140,8 @@ export type Database = {
           started_at: string | null;
           finished_at: string | null;
           approved_at: string | null;
+          approval_note: string | null;
+          rejection_note: string | null;
         };
         Insert: {
           id: string;
@@ -157,6 +159,8 @@ export type Database = {
           started_at?: string | null;
           finished_at?: string | null;
           approved_at?: string | null;
+          approval_note?: string | null;
+          rejection_note?: string | null;
         };
         Update: Partial<{
           id: string;
@@ -174,6 +178,8 @@ export type Database = {
           started_at: string | null;
           finished_at: string | null;
           approved_at: string | null;
+          approval_note: string | null;
+          rejection_note: string | null;
         }>;
         Relationships: [];
       };
