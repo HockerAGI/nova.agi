@@ -44,7 +44,7 @@ import {
 } from "./lib/always-on-mesh.js";
 import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
 import { integrateMcpToolCalls, mcpToolsPromptBlock, mcpStatus, formatToolResultsForUser } from "./lib/mcp-tool-calling.js";
-import { iaIaPromptBlock, requestCooperation, sendAgiMessage } from "./lib/ia-ia-protocol.js";
+import { iaIaPromptBlock, sendAgiMessage } from "./lib/ia-ia-protocol.js";
 
 const supabaseAdmin = createAdminSupabase();
 

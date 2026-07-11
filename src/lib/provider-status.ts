@@ -3,13 +3,14 @@ import type { CompletionMode, Intent, Provider } from "../types.js";
 
 export const NOVA_PROVIDER_STATUS_VERSION = "12.7M-1";
 
-const PROVIDERS: Provider[] = ["openai", "gemini", "anthropic", "ollama"];
+const PROVIDERS: Provider[] = ["openai", "gemini", "anthropic", "ollama", "base44"];
 const MODES: CompletionMode[] = ["auto", "fast", "pro"];
 
 function providerLabel(provider: Provider): string {
   if (provider === "openai") return "OpenAI";
   if (provider === "gemini") return "Gemini";
   if (provider === "anthropic") return "Anthropic";
+  if (provider === "base44") return "Base44";
   return "Ollama";
 }
 
@@ -17,6 +18,7 @@ function providerConfigured(provider: Provider): boolean {
   if (provider === "openai") return Boolean(config.openai.apiKey);
   if (provider === "gemini") return Boolean(config.gemini.apiKey);
   if (provider === "anthropic") return Boolean(config.anthropic.apiKey);
+  if (provider === "base44") return Boolean(config.base44.apiKey);
   return Boolean(config.ollama.enabled);
 }
 
@@ -24,6 +26,7 @@ function providerSignals(provider: Provider): string[] {
   if (provider === "openai") return config.openai.apiKey ? ["OPENAI_API_KEY"] : [];
   if (provider === "gemini") return config.gemini.apiKey ? ["GEMINI_API_KEY"] : [];
   if (provider === "anthropic") return config.anthropic.apiKey ? ["ANTHROPIC_API_KEY"] : [];
+  if (provider === "base44") return config.base44.apiKey ? ["BASE44_API_KEY"] : [];
   return config.ollama.enabled ? ["OLLAMA_ENABLED", "OLLAMA_BASE_URL"] : [];
 }
 

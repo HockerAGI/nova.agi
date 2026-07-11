@@ -3,6 +3,7 @@ import { openaiRespond } from "../providers/openai.js";
 import { geminiRespond } from "../providers/gemini.js";
 import { anthropicRespond } from "../providers/anthropic.js";
 import { ollamaRespond } from "../providers/ollama.js";
+import { base44Respond } from "../providers/base44.js";
 import type { Intent, Prefer, Provider, ChatMessage } from "../types.js";
 import { parseStableJson } from "./stable-json.js";
 
@@ -31,6 +32,7 @@ function providerAvailable(provider: Provider): boolean {
   if (provider === "ollama") return Boolean(config.ollama.enabled);
   if (provider === "openai") return Boolean(config.openai.apiKey);
   if (provider === "gemini") return Boolean(config.gemini.apiKey);
+  if (provider === "base44") return Boolean(config.base44.apiKey);
   return Boolean(config.anthropic.apiKey);
 }
 
@@ -50,6 +52,7 @@ function candidateProviders(prefer: Prefer = "auto"): Provider[] {
   push("anthropic");
   push("openai");
   push("gemini");
+  push("base44");
   push("ollama");
 
   return ordered;
@@ -154,6 +157,16 @@ async function completeWith(provider: Provider, messages: ChatMessage[]): Promis
     const result = await anthropicRespond({
       apiKey: config.anthropic.apiKey,
       model: modelFor("anthropic", "fast"),
+      messages,
+      timeoutMs,
+    });
+    return result.text;
+  }
+
+  if (provider === "base44") {
+    const result = await base44Respond({
+      apiKey: config.base44.apiKey,
+      model: modelFor("base44", "fast"),
       messages,
       timeoutMs,
     });

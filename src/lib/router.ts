@@ -4,7 +4,7 @@ import type { CompletionMode, Provider } from "../types.js";
 export function resolveProvider(prefer: string | undefined, fallback: Provider): Provider {
   const p = String(prefer ?? "").trim().toLowerCase();
 
-  if (p === "openai" || p === "gemini" || p === "anthropic" || p === "ollama") {
+  if (p === "openai" || p === "gemini" || p === "anthropic" || p === "ollama" || p === "base44") {
     return p;
   }
 
