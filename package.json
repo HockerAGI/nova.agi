@@ -23,6 +23,7 @@
   "devDependencies": {
     "@types/node": "^20.14.10",
     "@types/pdfkit": "^0.13.4",
+    "@vercel/node": "^5.8.24",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
   },

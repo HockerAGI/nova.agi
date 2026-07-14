@@ -1041,6 +1041,67 @@ export function buildNovaApp() {
   app.post("/api/v1/chat", handleChat);
   app.post("/api/v1/nova/interact", handleChat);
 
+  // ── SSE Streaming endpoint ──────────────────────────────────────────
+  // hocker.one calls /api/v1/chat/stream and expects Server-Sent Events.
+  // We call handleChat internally and emit the response as a single SSE
+  // "message" event followed by "done". This is compatible with the
+  // hocker.one realtime chat which parses SSE data lines.
+  app.post("/api/v1/chat/stream", async (request, reply) => {
+    // Collect the response from handleChat by intercepting reply.send
+    let capturedStatus = 200;
+    let capturedBody: unknown = null;
+
+    const fakeReply = {
+      status: (code: number) => ({
+        send: (payload: unknown) => {
+          capturedStatus = code;
+          capturedBody = payload;
+          return payload;
+        },
+      }),
+    };
+
+    try {
+      await handleChat(request, fakeReply as unknown as Parameters<typeof handleChat>[1]);
+    } catch (err) {
+      capturedStatus = 500;
+      capturedBody = { ok: false, error: err instanceof Error ? err.message : "NOVA stream error" };
+    }
+
+    reply.raw.writeHead(capturedStatus, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    const encoder = new TextEncoder();
+    const sse = (event: string, data: unknown) =>
+      `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
+    if (capturedStatus >= 400) {
+      reply.raw.write(sse("error", capturedBody ?? { ok: false, error: "NOVA error" }));
+    } else {
+      // Emit the full response as a single message event
+      const body = capturedBody as Record<string, unknown> | null;
+      if (body) {
+        reply.raw.write(
+          sse("message", {
+            ok: true,
+            type: "final",
+            content: body.reply ?? "",
+            actions: body.actions ?? [],
+            meta: body.meta ?? {},
+            transport: "nova_agi_sse",
+          }),
+        );
+      }
+    }
+
+    reply.raw.write(sse("done", { ok: capturedStatus < 400 }));
+    reply.raw.end();
+  });
+
   return app;
 }
 
