@@ -752,7 +752,7 @@ export async function handleChat(
       ? `Comandos soportados:\n${summarizeSupportedCommands()}`
       : "Las acciones productivas viven en Hocker ONE mediante agi_action_queue, Queue Lock, pruebas, auditoría y aprobación owner.",
     mcpToolsPromptBlock(),
-    "Si necesitas información real del sistema (base de datos, repositorios, despliegues), puedes pedir herramientas MCP. Las herramientas de solo lectura se ejecutan directo; las que modifican requieren aprobación de Hocker ONE.",
+    "IMPORTANTE: Cuando el usuario te pida información del sistema (tablas, datos, repos, despliegues, estado, archivos), DEBES usar las herramientas MCP disponibles para obtener datos REALES. No respondas con texto genérico si puedes consultar la información con una herramienta. Las herramientas de solo lectura se ejecutan automáticamente; las que modifican requieren aprobación del Owner.",
     iaIaPromptBlock(),
   ].join("\n");
 
@@ -791,10 +791,54 @@ export async function handleChat(
     return null;
   });
 
-  // If MCP tools were called and returned results, append a summary
-  // to the reply so the user sees what happened
+  // ── Multi-turn tool execution loop ───────────────────────────────────────
+  // If read-only tools were executed and returned data, feed the results
+  // back to the LLM for a natural-language reply that incorporates the
+  // actual data. This makes NOVA function like Claude/Replit/Codex.
   let finalReply = replyText;
-  if (mcpIntegration && mcpIntegration.toolCallsParsed > 0) {
+  if (mcpIntegration && mcpIntegration.toolCallsExecuted > 0) {
+    const executedResults = mcpIntegration.results.filter((r) => r.executed);
+    if (executedResults.length > 0) {
+      const toolDataBlock = executedResults
+        .map((r) => {
+          const dataStr = JSON.stringify(r.result.data, null, 2);
+          return `[Resultado de ${r.name}]:\n${dataStr}`;
+        })
+        .join("\n\n");
+
+      const followUpMessages: ChatMessage[] = [
+        ...buildConversation(systemPrompt, history, message),
+        { role: "assistant", content: completion.text },
+        {
+          role: "user",
+          content: `Las herramientas MCP ejecutaron y devolvieron estos datos reales:\n\n${toolDataBlock}\n\nAhora responde al usuario con esta información de forma natural, clara y en español. Usa los datos reales, no los inventes. Sé conciso pero completo.`,
+        },
+      ];
+
+      try {
+        const followUp = await completeWithFallback({
+          providers: providerOrder,
+          messages: followUpMessages,
+          mode: runtimePolicy.mode_effective,
+        });
+        const followUpParsed = parseReplyEnvelope(followUp.text);
+        const followUpReply = scrubProviderLeakage(
+          toNovaPublicReply(followUpParsed.reply || followUp.text, agi),
+        );
+        if (followUpReply.trim()) {
+          finalReply = followUpReply;
+        }
+      } catch (err) {
+        console.warn(`[NOVA MCP] follow-up completion error: ${err instanceof Error ? err.message : "unknown"}`);
+        // Fall back to tool summary
+        const toolSummary = formatToolResultsForUser(mcpIntegration.results);
+        if (toolSummary) {
+          finalReply = `${replyText}\n\n${toolSummary}`;
+        }
+      }
+    }
+  } else if (mcpIntegration && mcpIntegration.toolCallsParsed > 0) {
+    // Tool calls were parsed but none executed (all deferred for approval)
     const toolSummary = formatToolResultsForUser(mcpIntegration.results);
     if (toolSummary) {
       finalReply = `${replyText}\n\n${toolSummary}`;

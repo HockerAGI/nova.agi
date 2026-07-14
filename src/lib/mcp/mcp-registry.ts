@@ -200,13 +200,51 @@ class McpRegistry {
     if (tools.length === 0) {
       return "MCP: No hay integraciones conectadas en este momento.";
     }
-    const lines = tools.map((h) => `- ${h.provider}.${h.tool}: ${h.description}`);
+
+    // Group tools by provider for clearer presentation
+    const byProvider = new Map<string, string[]>();
+    for (const h of tools) {
+      const arr = byProvider.get(h.provider) ?? [];
+      arr.push(`${h.tool}: ${h.description}`);
+      byProvider.set(h.provider, arr);
+    }
+
+    const sections: string[] = [];
+    for (const [provider, toolLines] of byProvider) {
+      sections.push(`  [${provider}]`);
+      for (const line of toolLines) {
+        sections.push(`    - ${provider}.${line}`);
+      }
+    }
+
     return [
-      "MCP — Herramientas de integración disponibles para NOVA:",
-      ...lines,
+      "═══ MCP — HERRAMIENTAS REALES DISPONIBLES ═══",
+      "Tienes acceso a herramientas REALES que devuelven datos en tiempo real del sistema.",
+      "Cuando el usuario pida información del sistema (tablas, repos, despliegues, datos),",
+      "DEBES usar estas herramientas en lugar de responder con texto genérico.",
       "",
-      "Para usar una herramienta, responde con un JSON de acciones donde el comando sea 'provider.tool' (ej: 'supabase.table.select').",
-      "NOVA puede invocar estas herramientas para obtener información real del sistema.",
+      "Herramientas disponibles:",
+      ...sections,
+      "",
+      "═══ CÓMO INVOCAR HERRAMIENTAS ═══",
+      "Para usar una herramienta, incluye en tu respuesta un bloque JSON con tool_calls.",
+      "El formato EXACTO es:",
+      "",
+      '  {"reply":"Tu mensaje al usuario.","tool_calls":[{"name":"provider.tool","args":{...}}]}',
+      "",
+      "Ejemplos:",
+      '  • Listar tablas: {"reply":"Voy a revisar las tablas.","tool_calls":[{"name":"supabase.schema.list","args":{}}]}',
+      '  • Leer archivo: {"reply":"Revisando el código.","tool_calls":[{"name":"github.repo.read_file","args":{"path":"src/app.ts","ref":"main"}}]}',
+      '  • Contar filas: {"reply":"Consultando.","tool_calls":[{"name":"supabase.table.count","args":{"table":"agis"}}]}',
+      '  • Listar despliegues: {"reply":"Revisando.","tool_calls":[{"name":"vercel.deployment.list","args":{}}]}',
+      "",
+      "REGLAS:",
+      "1. Las herramientas de SOLO LECTURA (select, count, list, get, read_file) se ejecutan automáticamente.",
+      "2. Las herramientas que MODIFICAN (insert, update, delete, commit, PR, deploy) requieren aprobación del Owner.",
+      "3. NUNCA inventes datos — si puedes consultarlos con una herramienta, HAZLO.",
+      "4. Tu reply debe ser natural y en español; los tool_calls se procesan automáticamente.",
+      "5. Puedes hacer múltiples tool_calls en una sola respuesta.",
+      "═══ FIN MCP ═══",
     ].join("\n");
   }
 
