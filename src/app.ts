@@ -43,7 +43,8 @@ import {
   type NovaAlwaysOnCompletion,
 } from "./lib/always-on-mesh.js";
 import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
-import { integrateMcpToolCalls, mcpToolsPromptBlock, mcpStatus, formatToolResultsForUser } from "./lib/mcp-tool-calling.js";
+import { integrateMcpToolCalls, mcpToolsPromptBlock, mcpStatus, formatToolResultsForUser, executeToolCalls } from "./lib/mcp-tool-calling.js";
+import type { ToolExecutionResult } from "./lib/mcp-tool-calling.js";
 import { iaIaPromptBlock, sendAgiMessage } from "./lib/ia-ia-protocol.js";
 
 const supabaseAdmin = createAdminSupabase();
@@ -533,10 +534,20 @@ function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind:
   return clean.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+type NativeToolDef = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
 async function completeProvider(
   provider: Provider,
   messages: ChatMessage[],
   mode: CompletionMode,
+  tools?: NativeToolDef[],
 ) {
   const timeoutMs = mode === "pro" ? 60_000 : 35_000;
 
@@ -546,6 +557,7 @@ async function completeProvider(
       model: modelFor("openai", mode),
       messages,
       timeoutMs,
+      ...(tools ? { tools } : {}),
     });
   }
 
@@ -555,6 +567,7 @@ async function completeProvider(
       model: modelFor("gemini", mode),
       messages,
       timeoutMs,
+      ...(tools ? { tools } : {}),
     });
   }
 
@@ -564,6 +577,7 @@ async function completeProvider(
       model: modelFor("anthropic", mode),
       messages,
       timeoutMs,
+      ...(tools ? { tools } : {}),
     });
   }
 
@@ -588,14 +602,15 @@ async function completeWithFallback(args: {
   providers: Provider[];
   messages: ChatMessage[];
   mode: CompletionMode;
+  tools?: NativeToolDef[];
 }): Promise<NovaAlwaysOnCompletion> {
   const failures: Array<{ provider: Provider; reason: string }> = [];
 
   for (const provider of args.providers) {
     try {
-      const result = await completeProvider(provider, args.messages, args.mode);
+      const result = await completeProvider(provider, args.messages, args.mode, args.tools);
 
-      if (!String(result.text ?? "").trim()) {
+      if (!String(result.text ?? "").trim() && !(result as { toolCalls?: unknown[] }).toolCalls?.length) {
         throw new Error(`${provider} empty_response`);
       }
 
@@ -766,11 +781,33 @@ export async function handleChat(
     });
   }
 
+  // ── Build native MCP tool definitions for function-calling ──
+  // This lets the LLM use REAL tools via native function-calling
+  // (like Claude/Replit/Codex) instead of relying only on text parsing.
+  const mcpRegistry = getMcpRegistry();
+  const nativeToolDefs = mcpRegistry.buildToolDefinitions() as NativeToolDef[];
+
   const completion = await completeWithFallback({
     providers: providerOrder,
     messages: buildConversation(systemPrompt, history, message),
     mode: runtimePolicy.mode_effective,
+    ...(nativeToolDefs.length > 0 ? { tools: nativeToolDefs } : {}),
   });
+
+  // ── Native tool calls from the LLM (function-calling API) ──
+  // These come directly from the provider's tool_calls response,
+  // not from text parsing. Execute read-only tools immediately.
+  const nativeToolCalls = (completion as { toolCalls?: Array<{ id: string; name: string; args: Record<string, unknown> }> }).toolCalls ?? [];
+  let nativeExecResults: ToolExecutionResult[] = [];
+  if (nativeToolCalls.length > 0) {
+    try {
+      nativeExecResults = await executeToolCalls(nativeToolCalls, {
+        allowActions: runtimePolicy.allow_actions_effective,
+      });
+    } catch (err) {
+      console.warn(`[NOVA MCP] native tool execution error: ${err instanceof Error ? err.message : "unknown"}`);
+    }
+  }
 
   const parsedReply = parseReplyEnvelope(completion.text);
   const replyText = scrubProviderLeakage(toNovaPublicReply(parsedReply.reply || "Sin respuesta.", agi));
@@ -792,54 +829,61 @@ export async function handleChat(
   });
 
   // ── Multi-turn tool execution loop ───────────────────────────────────────
+  // Combines native function-calling results with text-parsed results.
+  // Read-only tools execute directly; mutating tools are deferred.
   // If read-only tools were executed and returned data, feed the results
   // back to the LLM for a natural-language reply that incorporates the
   // actual data. This makes NOVA function like Claude/Replit/Codex.
   let finalReply = replyText;
-  if (mcpIntegration && mcpIntegration.toolCallsExecuted > 0) {
-    const executedResults = mcpIntegration.results.filter((r) => r.executed);
-    if (executedResults.length > 0) {
-      const toolDataBlock = executedResults
-        .map((r) => {
-          const dataStr = JSON.stringify(r.result.data, null, 2);
-          return `[Resultado de ${r.name}]:\n${dataStr}`;
-        })
-        .join("\n\n");
+  const nativeExecuted = nativeExecResults.filter((r) => r.executed);
+  const textParsedExecuted = mcpIntegration?.results.filter((r) => r.executed) ?? [];
+  const allExecutedResults = [...nativeExecuted, ...textParsedExecuted];
+  const totalExecuted = allExecutedResults.length;
+  const totalParsed = nativeToolCalls.length + (mcpIntegration?.toolCallsParsed ?? 0);
+  const totalDeferred =
+    nativeExecResults.filter((r) => r.needsApproval && !r.executed).length +
+    (mcpIntegration?.toolCallsDeferred ?? 0);
 
-      const followUpMessages: ChatMessage[] = [
-        ...buildConversation(systemPrompt, history, message),
-        { role: "assistant", content: completion.text },
-        {
-          role: "user",
-          content: `Las herramientas MCP ejecutaron y devolvieron estos datos reales:\n\n${toolDataBlock}\n\nAhora responde al usuario con esta información de forma natural, clara y en español. Usa los datos reales, no los inventes. Sé conciso pero completo.`,
-        },
-      ];
+  if (totalExecuted > 0) {
+    const toolDataBlock = allExecutedResults
+      .map((r) => {
+        const dataStr = JSON.stringify(r.result.data, null, 2);
+        return `[Resultado de ${r.name}]:\n${dataStr}`;
+      })
+      .join("\n\n");
 
-      try {
-        const followUp = await completeWithFallback({
-          providers: providerOrder,
-          messages: followUpMessages,
-          mode: runtimePolicy.mode_effective,
-        });
-        const followUpParsed = parseReplyEnvelope(followUp.text);
-        const followUpReply = scrubProviderLeakage(
-          toNovaPublicReply(followUpParsed.reply || followUp.text, agi),
-        );
-        if (followUpReply.trim()) {
-          finalReply = followUpReply;
-        }
-      } catch (err) {
-        console.warn(`[NOVA MCP] follow-up completion error: ${err instanceof Error ? err.message : "unknown"}`);
-        // Fall back to tool summary
-        const toolSummary = formatToolResultsForUser(mcpIntegration.results);
-        if (toolSummary) {
-          finalReply = `${replyText}\n\n${toolSummary}`;
-        }
+    const followUpMessages: ChatMessage[] = [
+      ...buildConversation(systemPrompt, history, message),
+      { role: "assistant", content: completion.text || "(invocando herramienta)" },
+      {
+        role: "user",
+        content: `Las herramientas MCP ejecutaron y devolvieron estos datos reales:\n\n${toolDataBlock}\n\nAhora responde al usuario con esta información de forma natural, clara y en español. Usa los datos reales, no los inventes. Sé conciso pero completo.`,
+      },
+    ];
+
+    try {
+      const followUp = await completeWithFallback({
+        providers: providerOrder,
+        messages: followUpMessages,
+        mode: runtimePolicy.mode_effective,
+      });
+      const followUpParsed = parseReplyEnvelope(followUp.text);
+      const followUpReply = scrubProviderLeakage(
+        toNovaPublicReply(followUpParsed.reply || followUp.text, agi),
+      );
+      if (followUpReply.trim()) {
+        finalReply = followUpReply;
+      }
+    } catch (err) {
+      console.warn(`[NOVA MCP] follow-up completion error: ${err instanceof Error ? err.message : "unknown"}`);
+      const toolSummary = formatToolResultsForUser(allExecutedResults);
+      if (toolSummary) {
+        finalReply = `${replyText}\n\n${toolSummary}`;
       }
     }
-  } else if (mcpIntegration && mcpIntegration.toolCallsParsed > 0) {
-    // Tool calls were parsed but none executed (all deferred for approval)
-    const toolSummary = formatToolResultsForUser(mcpIntegration.results);
+  } else if (totalParsed > 0) {
+    const allDeferredResults = [...nativeExecResults, ...(mcpIntegration?.results ?? [])];
+    const toolSummary = formatToolResultsForUser(allDeferredResults);
     if (toolSummary) {
       finalReply = `${replyText}\n\n${toolSummary}`;
     }
@@ -874,9 +918,9 @@ export async function handleChat(
     runtime_policy: runtimePolicy.audit_meta,
     provider_failures: completion.internalFailures ?? [],
     survival_mode: completion.survivalMode === true,
-    mcp_tool_calls: mcpIntegration?.toolCallsParsed ?? 0,
-    mcp_tool_executed: mcpIntegration?.toolCallsExecuted ?? 0,
-    mcp_tool_deferred: mcpIntegration?.toolCallsDeferred ?? 0,
+    mcp_tool_calls: totalParsed,
+    mcp_tool_executed: totalExecuted,
+    mcp_tool_deferred: totalDeferred,
   });
 
   await recordSyntiaInteraction(supabaseAdmin, {
@@ -922,14 +966,12 @@ export async function handleChat(
       agi_registry: registryDecision.source,
       syntia_memory: syntiaMemory.source,
       syntia_memory_items: syntiaMemory.items.length,
-      mcp: mcpIntegration
-        ? {
-            tools_available: mcpIntegration.toolsAvailable,
-            tool_calls_parsed: mcpIntegration.toolCallsParsed,
-            tool_calls_executed: mcpIntegration.toolCallsExecuted,
-            tool_calls_deferred: mcpIntegration.toolCallsDeferred,
-          }
-        : null,
+      mcp: {
+        tools_available: nativeToolDefs.length,
+        tool_calls_parsed: totalParsed,
+        tool_calls_executed: totalExecuted,
+        tool_calls_deferred: totalDeferred,
+      },
       controls: {
         allow_write: controls.allow_write,
         requested_actions: body.allow_actions,

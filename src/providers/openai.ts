@@ -1,5 +1,24 @@
 import type { ChatMessage, CompletionResult } from "../types.js";
 
+export type NativeToolDef = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export type NativeToolCall = {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+};
+
+export type CompletionWithTools = CompletionResult & {
+  toolCalls?: NativeToolCall[];
+};
+
 type OpenAIChatContentPart =
   | { type?: "text"; text?: string }
   | { type?: string; [key: string]: unknown };
@@ -8,9 +27,15 @@ type OpenAIMessage = {
   content?: string | OpenAIChatContentPart[] | null;
 };
 
+type OpenAIToolCallRaw = {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+};
+
 type OpenAIResponse = {
   choices?: Array<{
-    message?: OpenAIMessage;
+    message?: OpenAIMessage & { tool_calls?: OpenAIToolCallRaw[] };
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -72,12 +97,41 @@ function normalizeUsage(
   return normalized;
 }
 
+function parseOpenAIToolCalls(raw: OpenAIToolCallRaw[] | undefined): NativeToolCall[] {
+  if (!raw || !Array.isArray(raw) || raw.length === 0) return [];
+  const out: NativeToolCall[] = [];
+  for (const tc of raw) {
+    if (!tc || !tc.function?.name) continue;
+    let args: Record<string, unknown> = {};
+    const rawArgs = tc.function.arguments;
+    if (typeof rawArgs === "string" && rawArgs.trim()) {
+      try {
+        const parsed = JSON.parse(rawArgs) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        }
+      } catch {
+        /* keep empty args */
+      }
+    } else if (rawArgs && typeof rawArgs === "object") {
+      args = rawArgs as Record<string, unknown>;
+    }
+    out.push({
+      id: String(tc.id || `ocall_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`),
+      name: tc.function.name,
+      args,
+    });
+  }
+  return out;
+}
+
 export async function openaiRespond(args: {
   apiKey: string;
   model: string;
   messages: ChatMessage[];
   timeoutMs: number;
-}): Promise<CompletionResult> {
+  tools?: NativeToolDef[];
+}): Promise<CompletionWithTools> {
   if (!args.apiKey?.trim()) {
     throw new Error("OpenAI API key no configurada.");
   }
@@ -86,6 +140,16 @@ export async function openaiRespond(args: {
   const timer = setTimeout(() => controller.abort(), args.timeoutMs);
 
   try {
+    const body: Record<string, unknown> = {
+      model: args.model,
+      messages: args.messages,
+      temperature: 0.2,
+    };
+    if (args.tools && args.tools.length > 0) {
+      body.tools = args.tools;
+      body.tool_choice = "auto";
+    }
+
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
@@ -93,11 +157,7 @@ export async function openaiRespond(args: {
         Authorization: `Bearer ${args.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: args.model,
-        messages: args.messages,
-        temperature: 0.2,
-      }),
+      body: JSON.stringify(body),
     });
 
     const json = (await res.json().catch(() => ({}))) as OpenAIResponse;
@@ -109,11 +169,13 @@ export async function openaiRespond(args: {
       throw new Error(message);
     }
 
-    const rawContent = json.choices?.[0]?.message?.content;
+    const msg = json.choices?.[0]?.message;
+    const rawContent = msg?.content;
     const text = extractTextContent(rawContent);
     const usage = normalizeUsage(json.usage);
+    const toolCalls = parseOpenAIToolCalls(msg?.tool_calls);
 
-    const result: CompletionResult = {
+    const result: CompletionWithTools = {
       provider: "openai",
       model: args.model,
       text,
@@ -122,6 +184,9 @@ export async function openaiRespond(args: {
 
     if (usage) {
       result.usage = usage;
+    }
+    if (toolCalls.length > 0) {
+      result.toolCalls = toolCalls;
     }
 
     return result;
