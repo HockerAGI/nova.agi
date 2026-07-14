@@ -208,13 +208,13 @@ export function modelFor(provider: "openai" | "gemini" | "anthropic" | "ollama" 
   if (override) return override;
 
   if (provider === "openai") {
-    return mode === "pro" ? "gpt-4o" : "gpt-4o-mini";
+    return mode === "pro" ? "gpt-5.4" : "gpt-5.4-nano";
   }
   if (provider === "gemini") {
     return mode === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
   }
   if (provider === "anthropic") {
-    return mode === "pro" ? "claude-3-5-sonnet-latest" : "claude-3-5-haiku-latest";
+    return mode === "pro" ? "claude-sonnet-4-6" : "claude-haiku-4-5-20251001";
   }
   if (provider === "base44") {
     // Base44 manages model selection internally; these are labels only
