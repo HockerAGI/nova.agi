@@ -130,10 +130,34 @@ function sanitizeProviderError(error: unknown): string {
   if (!(error instanceof Error)) return "provider_error";
   const message = error.message.toLowerCase();
 
-  if (message.includes("credit") || message.includes("billing") || message.includes("quota")) return "billing_or_quota";
-  if (message.includes("rate") || message.includes("429")) return "rate_limit";
-  if (message.includes("timeout") || message.includes("abort")) return "timeout";
-  if (message.includes("api key") || message.includes("unauthorized") || message.includes("401")) return "auth";
+  if (
+    message.includes("credit") ||
+    message.includes("billing") ||
+    message.includes("quota") ||
+    message.includes("insufficient_quota") ||
+    message.includes("resource_exhausted") ||
+    message.includes("exceeded your current quota") ||
+    message.includes("plan_limit") ||
+    message.includes("usage limit") ||
+    message.includes("spending limit")
+  )
+    return "billing_or_quota";
+  if (message.includes("rate") || message.includes("429") || message.includes("too many requests"))
+    return "rate_limit";
+  if (message.includes("timeout") || message.includes("abort") || message.includes("timed out"))
+    return "timeout";
+  if (
+    message.includes("api key") ||
+    message.includes("unauthorized") ||
+    message.includes("401") ||
+    message.includes("invalid_api_key") ||
+    message.includes("permission_denied")
+  )
+    return "auth";
+  if (message.includes("empty_response") || message.includes("empty"))
+    return "empty_response";
+  if (message.includes("model") && message.includes("not found"))
+    return "model_not_found";
 
   return "provider_error";
 }

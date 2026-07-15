@@ -44,12 +44,31 @@ type GeminiResponse = {
   error?: { message?: string };
 };
 
-/** Map our ChatMessage[] to Gemini "contents" (user/model roles only). */
-function toGeminiContents(messages: ChatMessage[]): Array<{ role: string; parts: GeminiPart[] }> {
-  return messages.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
-  }));
+/**
+ * Map our ChatMessage[] to Gemini "contents" (user/model roles only).
+ * System messages are extracted and returned separately for systemInstruction.
+ */
+function toGeminiContents(
+  messages: ChatMessage[],
+): { contents: Array<{ role: string; parts: GeminiPart[] }>; systemInstruction: string } {
+  const systemParts: string[] = [];
+  const contents: Array<{ role: string; parts: GeminiPart[] }> = [];
+
+  for (const m of messages) {
+    if (m.role === "system") {
+      systemParts.push(m.content);
+    } else {
+      contents.push({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      });
+    }
+  }
+
+  return {
+    contents,
+    systemInstruction: systemParts.join("\n"),
+  };
 }
 
 /** Convert OpenAI-style tool defs to Gemini functionDeclarations. */
@@ -77,10 +96,20 @@ export async function geminiRespond(args: {
   const timer = setTimeout(() => controller.abort(), args.timeoutMs);
 
   try {
+    const { contents, systemInstruction } = toGeminiContents(args.messages);
+
     const body: Record<string, unknown> = {
-      contents: toGeminiContents(args.messages),
-      generationConfig: { temperature: 0.2 },
+      contents,
+      generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
     };
+
+    // Use Gemini's native systemInstruction for system prompts
+    // This is the correct API approach and avoids role-mapping issues
+    if (systemInstruction.trim()) {
+      body.systemInstruction = {
+        parts: [{ text: systemInstruction }],
+      };
+    }
 
     const fnDecls = toGeminiTools(args.tools);
     if (fnDecls && fnDecls.length > 0) {
