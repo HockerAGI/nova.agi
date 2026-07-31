@@ -19,6 +19,9 @@ test("NOVA enforces authenticated rate limiting", async () => {
   assert.match(app, /RATE_LIMITED/);
   assert.match(app, /Retry-After/);
   assert.match(limiter, /createHash\("sha256"\)/);
+  assert.match(limiter, /consume_nova_rate_limit/);
+  assert.match(app, /await requestRateLimiter\.consume/);
+  assert.match(app, /RATE_LIMIT_UNAVAILABLE/);
   assert.doesNotMatch(limiter, /console\.log\(.*authorization/);
 });
 

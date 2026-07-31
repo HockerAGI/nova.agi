@@ -1112,7 +1112,6 @@ export function buildNovaApp() {
   const requestRateLimiter = createRequestRateLimiter({
     windowMs: Number(process.env.NOVA_RATE_LIMIT_WINDOW_MS ?? 60_000),
     max: Number(process.env.NOVA_RATE_LIMIT_MAX ?? 60),
-    maxBuckets: Number(process.env.NOVA_RATE_LIMIT_MAX_BUCKETS ?? 10_000),
   });
 
   app.addHook("preHandler", async (req, reply) => {
@@ -1125,10 +1124,21 @@ export function buildNovaApp() {
       }
     }
 
-    const decision = requestRateLimiter.consume({
-      ip: req.ip,
-      headers: req.headers,
-    });
+    let decision;
+    try {
+      decision = await requestRateLimiter.consume({
+        ip: req.ip,
+        headers: req.headers,
+      });
+    } catch {
+      reply.header("Retry-After", 5);
+      return reply.code(503).send({
+        ok: false,
+        error: "RATE_LIMIT_UNAVAILABLE",
+        retry_after_seconds: 5,
+      });
+    }
+
     reply.header("X-RateLimit-Limit", decision.limit);
     reply.header("X-RateLimit-Remaining", decision.remaining);
     reply.header("X-RateLimit-Reset", Math.ceil(decision.resetAt / 1000));
