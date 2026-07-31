@@ -7,6 +7,18 @@ services:
     volumes:
       - ollama_models:/root/.ollama
 
+  ollama-model:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sleep 5 && ollama pull "$${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}"
+
   nova:
     build:
       context: .
@@ -14,6 +26,7 @@ services:
     restart: unless-stopped
     depends_on:
       - ollama
+      - ollama-model
     ports:
       - "8080:8080"
     env_file:
@@ -23,6 +36,9 @@ services:
       PORT: "8080"
       OLLAMA_ENABLED: "true"
       OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL_AUTO: $${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL_FAST: $${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL_PRO: $${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}
       DEFAULT_PROVIDER: ollama
       PROVIDER_FALLBACKS: ollama,gemini,anthropic,openai,base44
       TEXT_PROVIDER_ORDER: ollama,gemini,anthropic,openai,base44
