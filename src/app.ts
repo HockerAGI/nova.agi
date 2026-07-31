@@ -721,11 +721,13 @@ export async function handleChat(
   });
 
   const providerOrder = providerOrderForIntent(intentDecision.intent, runtimePolicy.prefer_effective);
-  const provider = providerOrder[0] ?? pickProvider(runtimePolicy.prefer_effective);
+  let provider = providerOrder[0] ?? pickProvider(runtimePolicy.prefer_effective);
 
-  if (providerOrder.length === 0) {
-    providerOrder.push(pickProvider(runtimePolicy.prefer_effective));
-  }
+
+
+const budgetDecision = await providersWithinBudget(project_id, providerOrder);
+const effectiveProviderOrder = budgetDecision.available;
+provider = effectiveProviderOrder[0] ?? provider;
 
   const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision.intent, message);
   const agi = registryDecision.agi;
