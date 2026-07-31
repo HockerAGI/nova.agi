@@ -2,32 +2,26 @@
  * NOVA AGI — MCP Tool Calling Integration
  *
  * Bridges NOVA's chat flow to the MCP registry, enabling function-calling
- * like Claude, Replit Agent, OpenAI Codex, and Google Antigravity.
+ * while preserving the Hocker ONE Owner Gate.
  *
- * Flow:
- *  1. NOVA receives a user message
- *  2. If MCP tools are connected, they're described in the system prompt
- *  3. The LLM may request tool calls via JSON in its reply
- *  4. This module parses tool-call requests, executes them via the registry
- *  5. Results are formatted and returned alongside the reply
- *  6. For multi-turn tool use, results are fed back as tool messages
- *
- * Security:
- *  - All mutating tools (insert, update, delete, deploy, commit, PR)
- *    require the Hocker ONE approval chain (needs_approval=true)
- *  - Read-only tools (select, list, get, count) execute directly
- *  - No tool ever executes without the MCP master switch being on
+ * Security contract:
+ *  - Read-only tools may execute directly.
+ *  - Every mutating or ambiguous tool is prepared as an action draft.
+ *  - NOVA never executes writes, deployments, commits, PRs or RPC calls.
+ *  - Hocker ONE is the only component allowed to approve and execute drafts.
  */
 
 import { getMcpRegistry } from "./mcp/mcp-registry.js";
 import type { McpToolResult } from "./mcp/mcp-connector.js";
 
-// Tools that are safe to execute directly (read-only)
+// Keep this allowlist intentionally narrow. A tool is read-only only when its
+// contract guarantees that it cannot change remote state. Generic RPC calls
+// are excluded because a database function may mutate balances or permissions.
 const READ_ONLY_TOOL_PATTERNS = [
-  /^supabase\.(table\.select|table\.count|schema\.list|rpc\.call)/,
-  /^github\.(repo\.get|repo\.list_tree|repo\.read_file|repo\.list_prs|repo\.list_issues)/,
-  /^vercel\.(project\.list|project\.get|deployment\.list|deployment\.get|env\.list)/,
-  /^openai\.(embed\.create|moderate|model\.list|chat\.structured)/,
+  /^supabase\.(table\.select|table\.count|schema\.list)$/,
+  /^github\.(repo\.get|repo\.list_tree|repo\.read_file|repo\.list_prs|repo\.list_issues)$/,
+  /^vercel\.(project\.list|project\.get|deployment\.list|deployment\.get|env\.list)$/,
+  /^openai\.(embed\.create|moderate|model\.list|chat\.structured)$/,
 ];
 
 export type ParsedToolCall = {
@@ -53,23 +47,16 @@ export type McpChatIntegration = {
   toolPromptBlock: string;
 };
 
-/** Determine if a qualified tool name is read-only or requires approval */
 export function isReadOnlyTool(qualifiedName: string): boolean {
   return READ_ONLY_TOOL_PATTERNS.some((pattern) => pattern.test(qualifiedName));
 }
 
-/**
- * Parse a NOVA reply for tool-call requests.
- * NOVA's LLM may include a "tool_calls" array in its JSON envelope,
- * or inline tool-call blocks delimited by <tool_call>...</tool_call>.
- */
 export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
   const clean = String(reply ?? "").trim();
   if (!clean) return [];
 
   const calls: ParsedToolCall[] = [];
 
-  // Strategy 1: JSON envelope with tool_calls array
   try {
     const parsed = JSON.parse(clean) as Record<string, unknown>;
     if (Array.isArray(parsed.tool_calls)) {
@@ -79,9 +66,10 @@ export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
       }
     }
     if (calls.length > 0) return calls;
-  } catch { /* not JSON, try other strategies */ }
+  } catch {
+    // Not a JSON envelope; continue with delimited blocks.
+  }
 
-  // Strategy 2: <tool_call> delimited blocks
   const blockPattern = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
   let match: RegExpExecArray | null;
   while ((match = blockPattern.exec(clean)) !== null) {
@@ -91,18 +79,21 @@ export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
       const parsed = JSON.parse(blockContent.trim()) as Record<string, unknown>;
       const call = normalizeToolCall(parsed);
       if (call) calls.push(call);
-    } catch { /* skip malformed */ }
+    } catch {
+      // Skip malformed tool blocks.
+    }
   }
   if (calls.length > 0) return calls;
 
-  // Strategy 3: JSON blocks that look like { "tool": "provider.name", "args": {...} }
   const jsonBlockPattern = /\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}/g;
   while ((match = jsonBlockPattern.exec(clean)) !== null) {
     try {
       const parsed = JSON.parse(match[0]) as Record<string, unknown>;
       const call = normalizeToolCall(parsed);
       if (call) calls.push(call);
-    } catch { /* skip */ }
+    } catch {
+      // Skip malformed inline blocks.
+    }
   }
 
   return calls;
@@ -115,33 +106,55 @@ function normalizeToolCall(raw: unknown): ParsedToolCall | null {
   const name = String(obj.name ?? obj.tool ?? obj.function ?? "").trim();
   if (!name || !name.includes(".")) return null;
 
-  const args = (obj.args ?? obj.arguments ?? obj.input ?? {}) as Record<string, unknown>;
+  const rawArgs = obj.args ?? obj.arguments ?? obj.input ?? {};
+  const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+    ? rawArgs as Record<string, unknown>
+    : {};
   const id = String(obj.id ?? `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
 
-  return { id, name, args: args && typeof args === "object" ? args as Record<string, unknown> : {} };
+  return { id, name, args };
+}
+
+function buildOwnerGateDraft(call: ParsedToolCall): Record<string, unknown> {
+  const separator = call.name.indexOf(".");
+  const provider = separator > 0 ? call.name.slice(0, separator) : "unknown";
+  const tool = separator > 0 ? call.name.slice(separator + 1) : call.name;
+
+  return {
+    action_type: "mcp.execute",
+    tool_key: "mcp",
+    provider,
+    tool,
+    args: call.args,
+    requires_approval: true,
+    execution_target: "hocker.one.owner-gate",
+  };
 }
 
 /**
- * Execute parsed tool calls through the MCP registry.
- * Read-only tools execute directly; mutating tools are deferred
- * to the Hocker ONE approval chain.
+ * Execute only proven read-only calls. All other calls are returned as drafts
+ * so Hocker ONE can materialize, approve, lock, audit and execute them.
  */
 export async function executeToolCalls(
   calls: ParsedToolCall[],
   opts: { allowActions: boolean },
 ): Promise<ToolExecutionResult[]> {
+  void opts;
   const registry = getMcpRegistry();
   const results: ToolExecutionResult[] = [];
 
   for (const call of calls) {
     const readOnly = isReadOnlyTool(call.name);
 
-    // Mutating tools always need approval, regardless of allowActions
-    if (!readOnly && !opts.allowActions) {
+    if (!readOnly) {
       results.push({
         id: call.id,
         name: call.name,
-        result: { ok: false, error: "Mutating tool requires Hocker ONE approval chain" },
+        result: {
+          ok: false,
+          error: "MCP_MUTATION_REQUIRES_HOCKER_ONE_OWNER_GATE",
+          data: buildOwnerGateDraft(call),
+        },
         executed: false,
         needsApproval: true,
       });
@@ -154,17 +167,13 @@ export async function executeToolCalls(
       name: call.name,
       result,
       executed: result.ok,
-      needsApproval: !readOnly,
+      needsApproval: false,
     });
   }
 
   return results;
 }
 
-/**
- * Format tool execution results as a human-readable summary for NOVA's reply.
- * This keeps the user informed without leaking provider internals.
- */
 export function formatToolResultsForUser(results: ToolExecutionResult[]): string {
   if (results.length === 0) return "";
 
@@ -174,7 +183,7 @@ export function formatToolResultsForUser(results: ToolExecutionResult[]): string
     const toolLabel = r.name.replace(/\./g, " ");
 
     if (r.needsApproval && !r.executed) {
-      lines.push(`${status} ${toolLabel}: requiere aprobación en Hocker ONE.`);
+      lines.push(`${status} ${toolLabel}: quedó preparada para aprobación en Hocker ONE.`);
     } else if (r.result.ok) {
       const summary = summarizeResult(r.result.data);
       lines.push(`${status} ${toolLabel}: ${summary}`);
@@ -202,29 +211,26 @@ function summarizeResult(data: unknown): string {
   return "ok";
 }
 
-/**
- * Build tool messages for multi-turn LLM conversations.
- * These are injected as "tool" role messages so the LLM can
- * continue reasoning with the tool results.
- */
 export function buildToolMessages(results: ToolExecutionResult[]): Array<{ role: "tool"; content: string; name?: string }> {
   return results.map((r) => ({
     role: "tool" as const,
-    content: JSON.stringify({ id: r.id, name: r.name, ok: r.result.ok, data: r.result.data, error: r.result.error }),
+    content: JSON.stringify({
+      id: r.id,
+      name: r.name,
+      ok: r.result.ok,
+      data: r.result.data,
+      error: r.result.error,
+      needs_approval: r.needsApproval,
+    }),
     name: r.name,
   }));
 }
 
-/**
- * Full MCP chat integration: build the prompt block, parse tool calls
- * from a reply, execute them, and return a complete integration result.
- */
 export async function integrateMcpToolCalls(
   reply: string,
   opts: { allowActions: boolean },
 ): Promise<McpChatIntegration> {
   const registry = getMcpRegistry();
-  const status = registry.getStatus();
   const tools = registry.getConnectedTools();
 
   const toolPromptBlock = registry.buildPromptBlock();
@@ -241,19 +247,16 @@ export async function integrateMcpToolCalls(
   };
 }
 
-/** Get available tools as a prompt fragment for the system prompt */
 export function mcpToolsPromptBlock(): string {
   const registry = getMcpRegistry();
   return registry.buildPromptBlock();
 }
 
-/** Initialize the MCP registry (idempotent) */
 export async function initializeMcp(): Promise<void> {
   const registry = getMcpRegistry();
   await registry.initializeAll();
 }
 
-/** Get MCP status for health/mesh endpoints */
 export function mcpStatus(): {
   enabled: boolean;
   providers: number;
@@ -264,7 +267,7 @@ export function mcpStatus(): {
   const registry = getMcpRegistry();
   const status = registry.getStatus();
   return {
-    enabled: Boolean(process.env.MCP_ENABLED ?? "true"),
+    enabled: String(process.env.MCP_ENABLED ?? "true").toLowerCase() !== "false",
     providers: status.providers.length,
     connected: status.connectedProviders,
     configured: status.configuredProviders,

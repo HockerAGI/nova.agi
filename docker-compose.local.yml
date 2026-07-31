@@ -1,0 +1,50 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  ollama-model:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sleep 5 && ollama pull "$${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}"
+
+  nova:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - ollama-model
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      OLLAMA_ENABLED: "true"
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL_AUTO: $${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL_FAST: $${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL_PRO: $${OLLAMA_LOCAL_MODEL:-qwen2.5:7b}
+      DEFAULT_PROVIDER: ollama
+      PROVIDER_FALLBACKS: ollama,gemini,anthropic,openai,base44
+      TEXT_PROVIDER_ORDER: ollama,gemini,anthropic,openai,base44
+      CODE_PROVIDER_ORDER: ollama,gemini,anthropic,openai,base44
+      LONG_CONTEXT_PROVIDER_ORDER: ollama,gemini,anthropic,openai,base44
+      NOVA_SURVIVAL_MODE_ENABLED: "true"
+
+volumes:
+  ollama_models:
