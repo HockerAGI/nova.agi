@@ -75,11 +75,11 @@ export async function agiWorkerRoutes(app: FastifyInstance): Promise<void> {
       context: body.context as JsonObject,
       thread_id: body.thread_id ?? null,
       project_id: body.project_id,
-      trace_id: body.trace_id,
       priority: body.priority,
       write_policy: body.write_policy,
-      idempotency_key: body.idempotency_key,
       max_attempts: body.max_attempts,
+      ...(body.trace_id ? { trace_id: body.trace_id } : {}),
+      ...(body.idempotency_key ? { idempotency_key: body.idempotency_key } : {}),
     });
 
     return reply.status(result.ok ? (result.created ? 201 : 200) : 503).send(result);
