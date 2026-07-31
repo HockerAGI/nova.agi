@@ -89,8 +89,10 @@ begin
 end;
 $$;
 
-revoke all on function public.consume_nova_rate_limit(text, integer, integer, timestamptz) from public;
-grant execute on function public.consume_nova_rate_limit(text, integer, integer, timestamptz) to service_role;
+revoke execute on function public.consume_nova_rate_limit(text, integer, integer, timestamptz)
+  from public, anon, authenticated;
+grant execute on function public.consume_nova_rate_limit(text, integer, integer, timestamptz)
+  to service_role;
 
 comment on function public.consume_nova_rate_limit(text, integer, integer, timestamptz) is
   'Atomic, shared rate limiting for NOVA. Only service_role may execute it.';
