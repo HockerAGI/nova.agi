@@ -6,7 +6,8 @@ import {
   getAgiWorkerReadiness,
   recoverStaleAgiTasks,
 } from "../lib/agi-work-queue.js";
-import { runOneAgiTask } from "../lib/agi-worker-runtime.js";
+import { runOneAgiTaskAndRespond } from "../lib/agi-worker-cycle.js";
+import { getAgiWorkerLoopState } from "../lib/agi-worker-loop.js";
 import { requestVerifiableCooperation } from "../lib/verifiable-cooperation.js";
 
 const IntentSchema = z.enum(["general", "code", "ops", "finance", "social", "research"]);
@@ -47,6 +48,7 @@ export async function agiWorkerRoutes(app: FastifyInstance): Promise<void> {
       service: "nova.agi.verifiable-workers",
       schema_ready: readiness.ready,
       reason: readiness.reason,
+      loop: getAgiWorkerLoopState(),
       execution_policy: {
         direct_external_writes: false,
         external_tools_in_worker: false,
@@ -111,7 +113,7 @@ export async function agiWorkerRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      const result = await runOneAgiTask({
+      const result = await runOneAgiTaskAndRespond({
         project_id: parsed.data.project_id,
         worker_id: parsed.data.worker_id,
         assigned_agi: parsed.data.assigned_agi ?? null,
