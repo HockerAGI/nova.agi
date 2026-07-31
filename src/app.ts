@@ -21,6 +21,7 @@ import { pickAgiFromRegistry, registryPromptBlock } from "./lib/agi-registry.js"
 import { loadSyntiaMemory, recordSyntiaInteraction, syntiaMemoryPromptBlock } from "./lib/syntia-memory.js";
 import { enqueueActions } from "./lib/actions.js";
 import { safeBearerEquals } from "./lib/security.js";
+import { createRequestRateLimiter } from "./lib/rate-limit.js";
 import { jurixPublicRoutes } from "./routes/jurix-public.js";
 import { getLangfuseClient } from "./lib/telemetry.js";
 import { budgetCap } from "./lib/router.js";
@@ -664,21 +665,41 @@ async function completeWithFallback(args: {
   throw new Error("NOVA no pudo completar la respuesta con los motores disponibles.");
 }
 
-async function getControls(project_id: string): Promise<{ kill_switch: boolean; allow_write: boolean }> {
+type ControlState = {
+  kill_switch: boolean;
+  allow_write: boolean;
+  control_status: "available" | "unavailable" | "missing";
+};
+
+async function getControls(project_id: string): Promise<ControlState> {
   try {
-    const { data } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from("system_controls")
       .select("kill_switch,allow_write")
       .eq("project_id", project_id)
-      .eq("id", "global")
       .maybeSingle();
 
+    if (error) {
+      console.error("NOVA control read failed", { project_id, error: error.message });
+      return { kill_switch: true, allow_write: false, control_status: "unavailable" };
+    }
+
+    if (!data) {
+      console.error("NOVA control row missing", { project_id });
+      return { kill_switch: true, allow_write: false, control_status: "missing" };
+    }
+
     return {
-      kill_switch: Boolean((data as { kill_switch?: unknown } | null)?.kill_switch),
-      allow_write: Boolean((data as { allow_write?: unknown } | null)?.allow_write),
+      kill_switch: data.kill_switch === true,
+      allow_write: data.allow_write === true,
+      control_status: "available",
     };
-  } catch {
-    return { kill_switch: false, allow_write: false };
+  } catch (error) {
+    console.error("Unexpected NOVA control failure", {
+      project_id,
+      error: error instanceof Error ? error.message : "unknown",
+    });
+    return { kill_switch: true, allow_write: false, control_status: "unavailable" };
   }
 }
 
@@ -1015,7 +1036,11 @@ export async function handleChat(
 
   if (lfTrace) {
     lfTrace.event({ name: "chat.completed", metadata: { provider: completion.provider, model: completion.model } });
-    langfuse?.shutdownAsync?.();
+    try {
+      await langfuse?.shutdownAsync?.();
+    } catch (error) {
+      console.warn("Langfuse shutdown failed", error);
+    }
   }
 
   return reply.status(200).send(payload);
@@ -1084,14 +1109,37 @@ export function buildNovaApp() {
     origin: process.env.NOVA_ALLOWED_ORIGINS?.split(",") ?? ["https://hockerone.vercel.app", "https://hocker.one"],
   });
 
+  const requestRateLimiter = createRequestRateLimiter({
+    windowMs: Number(process.env.NOVA_RATE_LIMIT_WINDOW_MS ?? 60_000),
+    max: Number(process.env.NOVA_RATE_LIMIT_MAX ?? 60),
+    maxBuckets: Number(process.env.NOVA_RATE_LIMIT_MAX_BUCKETS ?? 10_000),
+  });
+
   app.addHook("preHandler", async (req, reply) => {
     if (req.method === "GET" && req.url.startsWith("/health")) return;
 
-    if (!config.orchestratorKey) return;
+    if (config.orchestratorKey) {
+      const auth = req.headers.authorization;
+      if (!auth || !safeBearerEquals(auth, `Bearer ${config.orchestratorKey}`)) {
+        return reply.code(401).send({ ok: false, error: "UNAUTHORIZED" });
+      }
+    }
 
-    const auth = req.headers.authorization;
-    if (!auth || !safeBearerEquals(auth, `Bearer ${config.orchestratorKey}`)) {
-      return reply.code(401).send({ ok: false, error: "Unauthorized" });
+    const decision = requestRateLimiter.consume({
+      ip: req.ip,
+      headers: req.headers,
+    });
+    reply.header("X-RateLimit-Limit", decision.limit);
+    reply.header("X-RateLimit-Remaining", decision.remaining);
+    reply.header("X-RateLimit-Reset", Math.ceil(decision.resetAt / 1000));
+
+    if (!decision.allowed) {
+      reply.header("Retry-After", decision.retryAfterSeconds);
+      return reply.code(429).send({
+        ok: false,
+        error: "RATE_LIMITED",
+        retry_after_seconds: decision.retryAfterSeconds,
+      });
     }
   });
 
@@ -1153,59 +1201,86 @@ export function buildNovaApp() {
 
   // ── SSE Streaming endpoint ──────────────────────────────────────────
   // hocker.one calls /api/v1/chat/stream and expects Server-Sent Events.
-  // We call handleChat internally and emit the response as a single SSE
-  // "message" event followed by "done". This is compatible with the
-  // hocker.one realtime chat which parses SSE data lines.
+  // Lifecycle streaming: accepted -> heartbeat(s) -> message/error -> done.
+  // Provider token streaming is intentionally not claimed until providers expose it.
   app.post("/api/v1/chat/stream", async (request, reply) => {
-    // Collect the response from handleChat by intercepting reply.send
-    let capturedStatus = 200;
-    let capturedBody: unknown = null;
-
-    const fakeReply = {
-      status: (code: number) => ({
-        send: (payload: unknown) => {
-          capturedStatus = code;
-          capturedBody = payload;
-          return payload;
-        },
-      }),
-    };
-
-    try {
-      await handleChat(request, fakeReply as unknown as Parameters<typeof handleChat>[1]);
-    } catch (err) {
-      capturedStatus = 500;
-      capturedBody = { ok: false, error: err instanceof Error ? err.message : "NOVA stream error" };
-    }
-
-    reply.raw.writeHead(capturedStatus, {
+    reply.hijack();
+    reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
 
-    const encoder = new TextEncoder();
     const sse = (event: string, data: unknown) =>
       `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
-    if (capturedStatus >= 400) {
-      reply.raw.write(sse("error", capturedBody ?? { ok: false, error: "NOVA error" }));
-    } else {
-      // Emit the full response as a single message event
-      const body = capturedBody as Record<string, unknown> | null;
-      if (body) {
-        reply.raw.write(
-          sse("message", {
-            ok: true,
-            type: "final",
-            content: body.reply ?? "",
-            actions: body.actions ?? [],
-            meta: body.meta ?? {},
-            transport: "nova_agi_sse",
-          }),
-        );
+    reply.raw.write(
+      sse("accepted", {
+        ok: true,
+        trace_id: randomUUID(),
+        transport: "nova_agi_sse",
+        timestamp: new Date().toISOString(),
+      }),
+    );
+
+    const heartbeat = setInterval(() => {
+      if (!reply.raw.writableEnded && !reply.raw.destroyed) {
+        reply.raw.write(sse("heartbeat", { timestamp: new Date().toISOString() }));
       }
+    }, 10_000);
+
+    let capturedStatus = 200;
+    let capturedBody: unknown = null;
+    const capture = (payload: unknown) => {
+      capturedBody = payload;
+      return payload;
+    };
+    const fakeReply = {
+      status: (code: number) => {
+        capturedStatus = code;
+        return { send: capture };
+      },
+      code: (code: number) => {
+        capturedStatus = code;
+        return { send: capture };
+      },
+      send: capture,
+    };
+
+    try {
+      await handleChat(request, fakeReply as unknown as Parameters<typeof handleChat>[1]);
+    } catch (error) {
+      capturedStatus = 500;
+      capturedBody = { ok: false, error: "NOVA_STREAM_FAILED" };
+      request.log.error({ err: error }, "NOVA stream failed");
+    } finally {
+      clearInterval(heartbeat);
+    }
+
+    if (reply.raw.writableEnded || reply.raw.destroyed) return;
+
+    if (capturedStatus >= 400) {
+      const body = capturedBody as Record<string, unknown> | null;
+      reply.raw.write(
+        sse("error", {
+          ok: false,
+          error: body?.error ?? "NOVA_REQUEST_FAILED",
+          status: capturedStatus,
+        }),
+      );
+    } else {
+      const body = capturedBody as Record<string, unknown> | null;
+      reply.raw.write(
+        sse("message", {
+          ok: true,
+          type: "final",
+          content: body?.reply ?? "",
+          actions: body?.actions ?? [],
+          meta: body?.meta ?? {},
+          transport: "nova_agi_sse",
+        }),
+      );
     }
 
     reply.raw.write(sse("done", { ok: capturedStatus < 400 }));

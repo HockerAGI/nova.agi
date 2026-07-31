@@ -1,6 +1,6 @@
 {
   "name": "nova-agi-orchestrator",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/*.test.mjs",
     "seed:agis": "tsx src/scripts/seedAgis.ts"
   },
   "dependencies": {
@@ -16,15 +17,22 @@
     "@supabase/supabase-js": "^2.49.1",
     "dotenv": "^16.4.5",
     "fastify": "^5.8.5",
-    "langfuse-node": "^3.38.6",
+    "langfuse-node": "3.38.20",
     "pdfkit": "^0.15.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/node": "^20.14.10",
+    "@types/node": "^22.13.1",
     "@types/pdfkit": "^0.13.4",
     "tsx": "^4.16.2",
-    "typescript": "^5.5.4"
+    "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "axios": "1.18.1",
+    "fast-uri": "3.1.4",
+    "find-my-way": "9.7.0",
+    "form-data": "4.0.6",
+    "ws": "8.21.1"
   },
   "engines": {
     "node": "22.x"
