@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sbAdmin } from "./supabase.js";
 
 export type RateLimitDecision = {
   allowed: boolean;
@@ -13,9 +14,16 @@ type RequestLike = {
   headers: Record<string, string | string[] | undefined>;
 };
 
-type Bucket = {
-  count: number;
-  resetAt: number;
+type RateLimitRpcResponse = {
+  data: unknown;
+  error: { message?: string } | null;
+};
+
+type RateLimitRpcClient = {
+  rpc(
+    functionName: string,
+    args: Record<string, unknown>,
+  ): PromiseLike<RateLimitRpcResponse>;
 };
 
 function positiveInteger(value: number, fallback: number) {
@@ -35,56 +43,66 @@ function requestKey(request: RequestLike) {
   return createHash("sha256").update(client).digest("hex");
 }
 
+function numericField(
+  source: Record<string, unknown>,
+  field: string,
+  fallback: number,
+) {
+  const value = Number(source[field]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function parseDecision(data: unknown, max: number, now: number): RateLimitDecision {
+  const candidate = Array.isArray(data) ? data[0] : data;
+  if (!candidate || typeof candidate !== "object") {
+    throw new Error("RATE_LIMIT_INVALID_RESPONSE");
+  }
+
+  const row = candidate as Record<string, unknown>;
+  const allowed = row.allowed;
+  if (typeof allowed !== "boolean") {
+    throw new Error("RATE_LIMIT_INVALID_RESPONSE");
+  }
+
+  const limit = Math.max(1, Math.floor(numericField(row, "limit", max)));
+  const remaining = Math.max(0, Math.floor(numericField(row, "remaining", 0)));
+  const resetAt = Math.max(now, Math.floor(numericField(row, "reset_at_ms", now)));
+  const retryAfterSeconds = Math.max(
+    1,
+    Math.ceil(numericField(row, "retry_after_seconds", (resetAt - now) / 1000)),
+  );
+
+  return {
+    allowed,
+    limit,
+    remaining,
+    resetAt,
+    retryAfterSeconds,
+  };
+}
+
 export function createRequestRateLimiter(options?: {
   windowMs?: number;
   max?: number;
-  maxBuckets?: number;
 }) {
   const windowMs = positiveInteger(options?.windowMs ?? 60_000, 60_000);
   const max = positiveInteger(options?.max ?? 60, 60);
-  const maxBuckets = positiveInteger(options?.maxBuckets ?? 10_000, 10_000);
-  const buckets = new Map<string, Bucket>();
-  let operations = 0;
-
-  const prune = (now: number) => {
-    operations += 1;
-    if (operations % 100 !== 0 && buckets.size < maxBuckets) return;
-
-    for (const [key, bucket] of buckets) {
-      if (bucket.resetAt <= now) buckets.delete(key);
-    }
-
-    if (buckets.size <= maxBuckets) return;
-    const overflow = buckets.size - maxBuckets;
-    for (const key of buckets.keys()) {
-      buckets.delete(key);
-      if (buckets.size <= maxBuckets - overflow) break;
-    }
-  };
+  const rpcClient = sbAdmin() as unknown as RateLimitRpcClient;
 
   return {
-    consume(request: RequestLike, now = Date.now()): RateLimitDecision {
-      prune(now);
-      const key = requestKey(request);
-      const current = buckets.get(key);
-      const bucket = !current || current.resetAt <= now
-        ? { count: 0, resetAt: now + windowMs }
-        : current;
+    async consume(request: RequestLike, now = Date.now()): Promise<RateLimitDecision> {
+      const { data, error } = await rpcClient.rpc("consume_nova_rate_limit", {
+        p_key: requestKey(request),
+        p_window_ms: windowMs,
+        p_max: max,
+        p_now: new Date(now).toISOString(),
+      });
 
-      bucket.count += 1;
-      buckets.set(key, bucket);
+      if (error) {
+        throw new Error("RATE_LIMIT_UNAVAILABLE");
+      }
 
-      const allowed = bucket.count <= max;
-      const remaining = Math.max(0, max - bucket.count);
-      const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
-
-      return {
-        allowed,
-        limit: max,
-        remaining,
-        resetAt: bucket.resetAt,
-        retryAfterSeconds,
-      };
+      return parseDecision(data, max, now);
     },
   };
 }
