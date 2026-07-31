@@ -1,0 +1,55 @@
+name: Finalize MCP Owner Gate payload
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.head_ref == 'feature/mcp-owner-gate-bridge-20260731' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/mcp-owner-gate-bridge-20260731
+          fetch-depth: 0
+      - name: Add drafts to the final ChatResult metadata
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('src/app.ts')
+          text = path.read_text()
+          pattern = re.compile(
+            r'(const payload: ChatResult = \{[\s\S]*?\n\s*mcp: \{[\s\S]*?\n\s*tool_calls_deferred: totalDeferred,)(\n\s*\},\n\s*controls:)',
+            re.MULTILINE,
+          )
+          if not re.search(r'const payload: ChatResult = \{[\s\S]*?deferred_actions: deferredMcpActions[\s\S]*?controls:', text):
+            text, count = pattern.subn(r'\1\n        deferred_actions: deferredMcpActions,\2', text, count=1)
+            if count != 1:
+              raise SystemExit('exact ChatResult MCP section not found')
+
+          final_match = re.search(
+            r'const payload: ChatResult = \{[\s\S]*?mcp: \{[\s\S]*?deferred_actions: deferredMcpActions,[\s\S]*?\},\n\s*controls:',
+            text,
+          )
+          if not final_match:
+            raise SystemExit('deferred drafts are not in final ChatResult metadata')
+
+          path.write_text(text)
+          PY
+      - name: Remove temporary workflow and commit
+        shell: bash
+        run: |
+          rm .github/workflows/finalize-mcp-owner-gate-payload.yml
+          git config user.name "hocker-audit-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/app.ts .github/workflows/finalize-mcp-owner-gate-payload.yml
+          git commit -m "fix(mcp): expose drafts in final ChatResult metadata"
+          git push origin HEAD:feature/mcp-owner-gate-bridge-20260731
