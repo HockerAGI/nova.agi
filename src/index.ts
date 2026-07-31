@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { buildNovaApp } from "./app.js";
 import { config } from "./config.js";
+import { startAgiWorkerLoop } from "./lib/agi-worker-loop.js";
 import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
 import { agiWorkerRoutes } from "./routes/agi-workers.js";
 
@@ -19,6 +20,15 @@ export async function buildNovaAppWithWorkers() {
 
 export async function startServer() {
   const app = await buildNovaAppWithWorkers();
+  const stopWorkerLoop = startAgiWorkerLoop({
+    info: (message) => app.log.info(message),
+    warn: (message) => app.log.warn(message),
+    error: (message) => app.log.error(message),
+  });
+
+  app.addHook("onClose", async () => {
+    stopWorkerLoop();
+  });
 
   getMcpRegistry()
     .initializeAll()
