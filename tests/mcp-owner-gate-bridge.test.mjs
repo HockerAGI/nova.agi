@@ -12,8 +12,10 @@ test("NOVA returns normalized MCP drafts instead of executing writes", async () 
   assert.match(helper, /requires_approval: true/);
   assert.match(helper, /SENSITIVE_KEY/);
   assert.match(helper, /MAX_ARGS_BYTES/);
-  assert.match(app, /deferred_actions: deferredMcpActions/);
   assert.match(app, /mcp_deferred_actions: deferredMcpActions\.length/);
   assert.match(app, /collectDeferredMcpOwnerGateDrafts/);
   assert.doesNotMatch(app, /AGI de apoyo activa/);
+
+  const finalPayload = app.match(/const payload: ChatResult = \{[\s\S]*?return reply\.status\(200\)\.send\(payload\);/)?.[0] ?? "";
+  assert.match(finalPayload, /mcp: \{[\s\S]*?deferred_actions: deferredMcpActions,[\s\S]*?controls:/);
 });
