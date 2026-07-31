@@ -24,7 +24,7 @@ import { safeBearerEquals } from "./lib/security.js";
 import { createRequestRateLimiter } from "./lib/rate-limit.js";
 import { jurixPublicRoutes } from "./routes/jurix-public.js";
 import { getLangfuseClient } from "./lib/telemetry.js";
-import { budgetCap } from "./lib/router.js";
+import { providersWithinBudget } from "./lib/provider-budget.js";
 import { sanitizeNovaAction, summarizeSupportedCommands } from "./lib/command-policy.js";
 import { recordUsage, tokensUsedThisMonth } from "./lib/usage.js";
 import { getNovaProviderStatus } from "./lib/provider-status.js";
@@ -394,33 +394,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function supportWorkSummary(agi: { id: string; name: string; kind: string }): string | null {
-  const id = String(agi.id ?? "").toLowerCase();
-
-  const summaries: Record<string, string> = {
-    syntia: "me ayudó a ordenar el contexto y mantener continuidad.",
-    vertx: "me ayudó a revisar seguridad, permisos y riesgos.",
-    hostia: "me ayudó a revisar la operación, infraestructura y estabilidad.",
-    jurix: "me ayudó a cuidar privacidad, cumplimiento y riesgos legales.",
-    numia: "me ayudó a revisar costos, consumo y riesgo financiero.",
-    nova_ads: "me ayudó con estrategia comercial, campañas y embudo.",
-    candy: "me ayudó con claridad creativa, tono visual y contenido.",
-    pro_ia: "me ayudó con guion, producción y enfoque audiovisual.",
-    curvewind: "me ayudó a ordenar escenarios y estrategia.",
-    revia: "me ayudó con seguimiento comercial, cierres y CRM.",
-    trackhok: "me ayudó a revisar señales y estado operativo.",
-    nexpa: "me ayudó a cuidar límites de seguridad humana.",
-    chido_wins: "me ayudó a revisar riesgo y probabilidad sin prometer resultados.",
-    chido_gerente: "me ayudó a ordenar la operación de Chido.",
-    shadows: "me ayudó con tareas de apoyo bajo control.",
-  };
-
-  if (id === "nova") return null;
-  return summaries[id] ?? `me ayudó en la parte ${agi.kind || "especializada"}.`;
-}
-
-
-
 function chidoResearchGateReply(message: string): string | null {
   const m = String(message || "").toLowerCase();
 
@@ -511,7 +484,6 @@ function humanizeNovaTone(reply: string): string {
 }
 
 function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind: string }): string {
-  const agiName = String(agi.name || "").trim();
   let clean = String(reply || "").trim();
 
   if (!clean) clean = "Listo.";
@@ -543,11 +515,6 @@ function toNovaPublicReply(reply: string, agi: { id: string; name: string; kind:
     clean = clean.replace(pattern, "Soy NOVA. ");
   }
 
-  const support = supportWorkSummary(agi);
-
-  if (support && agiName && !new RegExp(`${escapeRegExp(agiName)}\\s+me\\s+apoy[oó]`, "i").test(clean)) {
-    clean = `${clean}\n\n${agiName} me apoyó: ${support}`;
-  }
 
   clean = humanizeNovaTone(clean);
 
@@ -781,7 +748,9 @@ export async function handleChat(
     context_data: body.context_data ?? {},
   });
 
-  const monthlyTokens = await tokensUsedThisMonth(project_id, provider);
+  const monthlyTokens = effectiveProviderOrder.length > 0
+  ? await tokensUsedThisMonth(project_id, provider).catch(() => 0)
+  : 0;
 
   const systemPrompt = [
     "Eres NOVA, núcleo ejecutivo del ecosistema HOCKER. NOVA siempre está al mando y habla con una sola voz.",
@@ -816,15 +785,6 @@ export async function handleChat(
     iaIaPromptBlock(),
   ].join("\n");
 
-  const monthlyBudgetCap = budgetCap(provider);
-  if (monthlyTokens >= monthlyBudgetCap) {
-    return reply.status(429).send({
-      ok: false,
-      error: "Budget cap reached for provider. Please try again later.",
-      trace_id,
-      provider,
-    });
-  }
 
   // ── Build native MCP tool definitions for function-calling ──
   // This lets the LLM use REAL tools via native function-calling
@@ -833,7 +793,7 @@ export async function handleChat(
   const nativeToolDefs = mcpRegistry.buildToolDefinitions() as NativeToolDef[];
 
   const completion = await completeWithFallback({
-    providers: providerOrder,
+    providers: effectiveProviderOrder,
     messages: buildConversation(systemPrompt, history, message),
     mode: runtimePolicy.mode_effective,
     ...(nativeToolDefs.length > 0 ? { tools: nativeToolDefs } : {}),
@@ -908,7 +868,7 @@ export async function handleChat(
 
     try {
       const followUp = await completeWithFallback({
-        providers: providerOrder,
+        providers: effectiveProviderOrder,
         messages: followUpMessages,
         mode: runtimePolicy.mode_effective,
       });
