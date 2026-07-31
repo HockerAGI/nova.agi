@@ -4,6 +4,7 @@ import { buildNovaApp } from "./app.js";
 import { config } from "./config.js";
 import { startAgiWorkerLoop } from "./lib/agi-worker-loop.js";
 import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
+import { resolveNovaListenHost } from "./lib/runtime-listener.js";
 import { agiWorkerRoutes } from "./routes/agi-workers.js";
 
 const currentScript = process.argv[1]
@@ -41,8 +42,9 @@ export async function startServer() {
       app.log.warn(`[NOVA MCP] initialization error: ${error instanceof Error ? error.message : "unknown"}`);
     });
 
-  await app.listen({ port: config.port, host: "0.0.0.0" });
-  app.log.info(`[NOVA AGI] listening on ${config.port} with verifiable AGI workers`);
+  const host = resolveNovaListenHost();
+  await app.listen({ port: config.port, host });
+  app.log.info(`[NOVA AGI] listening on ${host}:${config.port} with verifiable AGI workers`);
 }
 
 if (isMain) {
