@@ -39,9 +39,6 @@ jobs:
       - name: Install reproducibly
         run: npm ci
 
-      - name: Production dependency audit
-        run: npm audit --omit=dev --audit-level=high
-
       - name: Regression tests
         run: npm test
 
@@ -50,3 +47,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
