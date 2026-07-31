@@ -43,7 +43,7 @@ export async function tokensUsedThisMonth(
 
 export async function recordUsage(args: {
   project_id: string;
-  thread_id?: string | undefined;
+  thread_id?: string | null | undefined;
   provider: Provider;
   model: string;
   tokens_in?: number | undefined;
