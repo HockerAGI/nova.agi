@@ -46,6 +46,7 @@ import {
 import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
 import { integrateMcpToolCalls, mcpToolsPromptBlock, mcpStatus, formatToolResultsForUser, executeToolCalls } from "./lib/mcp-tool-calling.js";
 import type { ToolExecutionResult } from "./lib/mcp-tool-calling.js";
+import { collectDeferredMcpOwnerGateDrafts } from "./lib/mcp-owner-gate-drafts.js";
 import { iaIaPromptBlock, sendAgiMessage } from "./lib/ia-ia-protocol.js";
 
 const supabaseAdmin = createAdminSupabase();
@@ -762,8 +763,8 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
     "No hables como robot, consola, manual técnico ni reporte interno.",
     "No llenes la respuesta de tecnicismos. Lo técnico queda por dentro; al usuario le hablas claro.",
     "Evita párrafos largos. Usa frases naturales, como si hablaras con Armando en una conversación real.",
-    `AGI de apoyo activa: ${agi.name}.`,
-    "Si una AGI te apoya, dilo breve y natural: por ejemplo, HOSTIA me ayudó a revisar la operación. No lo conviertas en reporte técnico.",
+    `Perfil especializado seleccionado para orientar la respuesta: ${agi.name}.`,
+    "Seleccionar un perfil no demuestra cooperación IA↔IA. Solo afirma apoyo de otra AGI cuando exista una respuesta correlacionada y verificable.",
     agi.system_prompt,
     registryPromptBlock(agi),
     syntiaMemoryPromptBlock(syntiaMemory),
@@ -850,6 +851,10 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
   const totalDeferred =
     nativeExecResults.filter((r) => r.needsApproval && !r.executed).length +
     (mcpIntegration?.toolCallsDeferred ?? 0);
+  const deferredMcpActions = collectDeferredMcpOwnerGateDrafts([
+  ...nativeExecResults,
+  ...(mcpIntegration?.results ?? []),
+]);
 
   if (totalExecuted > 0) {
     const toolDataBlock = allExecutedResults
@@ -928,6 +933,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
     mcp_tool_calls: totalParsed,
     mcp_tool_executed: totalExecuted,
     mcp_tool_deferred: totalDeferred,
+    mcp_deferred_actions: deferredMcpActions.length,
   });
 
   await recordSyntiaInteraction(supabaseAdmin, {
@@ -978,6 +984,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
         tool_calls_parsed: totalParsed,
         tool_calls_executed: totalExecuted,
         tool_calls_deferred: totalDeferred,
+        deferred_actions: deferredMcpActions,
       },
       controls: {
         allow_write: controls.allow_write,
