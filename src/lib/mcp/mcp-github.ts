@@ -1,36 +1,227 @@
 /**
  * NOVA AGI — GitHub MCP Connector
  *
- * Connects NOVA to GitHub repositories for code management:
- * reading files, listing trees, creating branches, commits, and PRs.
- *
- * Tools exposed:
- *  - repo.get          : Get repository metadata
- *  - repo.list_tree    : List files in a repo path
- *  - repo.read_file    : Read a file's content
- *  - repo.create_branch: Create a new branch
- *  - repo.create_commit: Create a commit on a branch
- *  - repo.create_pr    : Create a pull request
- *  - repo.list_prs     : List pull requests
- *  - repo.list_issues  : List issues
- *  - repo.create_issue : Create an issue
+ * Read tools execute inside the authenticated NOVA runtime. Every mutation is
+ * represented with the same tool contract consumed by Hocker ONE and is
+ * deferred to its Owner Gate.
  */
 
-import { McpConnector, type McpConnectorConfig, type McpToolResult, type McpToolSchema } from "./mcp-connector.js";
-
-const GITHUB_TOOLS: McpToolSchema[] = [
-  { name: "repo.get", description: "Get repository metadata.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" } }, required: ["owner", "repo"] } },
-  { name: "repo.list_tree", description: "List files in a repository path.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, path: { type: "string" }, ref: { type: "string" } }, required: ["owner", "repo"] } },
-  { name: "repo.read_file", description: "Read a file from a repository.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, path: { type: "string" }, ref: { type: "string" } }, required: ["owner", "repo", "path"] } },
-  { name: "repo.create_branch", description: "Create a new branch from a base ref.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, branch: { type: "string" }, from: { type: "string" } }, required: ["owner", "repo", "branch"] } },
-  { name: "repo.create_commit", description: "Create or update a file via a commit.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, branch: { type: "string" }, path: { type: "string" }, content: { type: "string" }, message: { type: "string" } }, required: ["owner", "repo", "branch", "path", "content", "message"] } },
-  { name: "repo.create_pr", description: "Create a pull request.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, title: { type: "string" }, head: { type: "string" }, base: { type: "string" }, body: { type: "string" } }, required: ["owner", "repo", "title", "head", "base"] } },
-  { name: "repo.list_prs", description: "List pull requests.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, state: { type: "string" } }, required: ["owner", "repo"] } },
-  { name: "repo.list_issues", description: "List repository issues.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, state: { type: "string" } }, required: ["owner", "repo"] } },
-  { name: "repo.create_issue", description: "Create a repository issue.", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, title: { type: "string" }, body: { type: "string" }, labels: { type: "array" } }, required: ["owner", "repo", "title"] } },
-];
+import {
+  McpConnector,
+  type McpConnectorConfig,
+  type McpToolResult,
+  type McpToolSchema,
+} from "./mcp-connector.js";
 
 const GITHUB_API = "https://api.github.com";
+const SAFE_REPOSITORY_PART = /^[a-z0-9_.-]+$/i;
+const SAFE_REF = /^[a-z0-9_./-]+$/i;
+const MAX_FILE_BYTES = 64 * 1024;
+const MUTATION_TOOLS = new Set([
+  "create_branch",
+  "create_or_update_file",
+  "create_pull_request",
+  "create_issue",
+]);
+
+const DEFAULT_REPOSITORIES = [
+  "HockerAGI/hocker.one",
+  "HockerAGI/nova.agi",
+  "HockerAGI/hocker-node-agent",
+] as const;
+
+const GITHUB_TOOLS: McpToolSchema[] = [
+  {
+    name: "get_repository",
+    description: "Get metadata for an allowlisted HOCKER repository.",
+    inputSchema: {
+      type: "object",
+      properties: { owner: { type: "string" }, repo: { type: "string" } },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "list_tree",
+    description: "List the recursive Git tree for an allowlisted repository.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        ref: { type: "string" },
+        path: { type: "string" },
+        limit: { type: "number" },
+      },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "get_file_contents",
+    description: "Read a text file or directory listing from an allowlisted repository.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        path: { type: "string" },
+        ref: { type: "string" },
+      },
+      required: ["owner", "repo", "path"],
+    },
+  },
+  {
+    name: "list_pull_requests",
+    description: "List pull requests for an allowlisted repository.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        state: { type: "string" },
+      },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "list_issues",
+    description: "List issues for an allowlisted repository.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        state: { type: "string" },
+      },
+      required: ["owner", "repo"],
+    },
+  },
+  {
+    name: "create_branch",
+    description: "Prepare creation of a non-main branch for Hocker ONE Owner Gate approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        branch: { type: "string" },
+        from: { type: "string" },
+      },
+      required: ["owner", "repo", "branch"],
+    },
+  },
+  {
+    name: "create_or_update_file",
+    description: "Prepare a branch file change for Hocker ONE Owner Gate approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        branch: { type: "string" },
+        path: { type: "string" },
+        content: { type: "string" },
+        message: { type: "string" },
+        sha: { type: "string" },
+      },
+      required: ["owner", "repo", "branch", "path", "content", "message"],
+    },
+  },
+  {
+    name: "create_pull_request",
+    description: "Prepare a pull request for Hocker ONE Owner Gate approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        title: { type: "string" },
+        head: { type: "string" },
+        base: { type: "string" },
+        body: { type: "string" },
+        draft: { type: "boolean" },
+      },
+      required: ["owner", "repo", "title", "head", "base"],
+    },
+  },
+  {
+    name: "create_issue",
+    description: "Prepare a GitHub issue for Hocker ONE Owner Gate approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        title: { type: "string" },
+        body: { type: "string" },
+        labels: { type: "array" },
+      },
+      required: ["owner", "repo", "title"],
+    },
+  },
+];
+
+function envList(name: string, fallback: readonly string[]): string[] {
+  const raw = String(process.env[name] ?? "").trim();
+  return (raw ? raw.split(",") : [...fallback])
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function allowedRepositories(): Set<string> {
+  return new Set(
+    envList("NOVA_GITHUB_ALLOWED_REPOS", DEFAULT_REPOSITORIES)
+      .map((item) => item.toLowerCase()),
+  );
+}
+
+function repository(args: Record<string, unknown>): {
+  owner: string;
+  repo: string;
+  fullName: string;
+} {
+  const owner = String(args.owner ?? "").trim();
+  const repo = String(args.repo ?? "").trim();
+
+  if (!SAFE_REPOSITORY_PART.test(owner) || !SAFE_REPOSITORY_PART.test(repo)) {
+    throw new Error("Repositorio GitHub inválido.");
+  }
+
+  const fullName = `${owner}/${repo}`;
+  if (!allowedRepositories().has(fullName.toLowerCase())) {
+    throw new Error(`Repositorio fuera de allowlist NOVA: ${fullName}`);
+  }
+
+  return { owner, repo, fullName };
+}
+
+function safeRef(value: unknown, fallback = "HEAD"): string {
+  const ref = String(value ?? fallback).trim() || fallback;
+  if (ref.length > 160 || !SAFE_REF.test(ref) || ref.includes("..")) {
+    throw new Error("Ref GitHub inválida.");
+  }
+  return ref;
+}
+
+function safePath(value: unknown, allowEmpty = false): string {
+  const path = String(value ?? "").trim().replace(/^\/+/, "");
+  if (!path && allowEmpty) return "";
+  if (!path || path.length > 500 || path.includes("..") || path.includes("\\") || /[\r\n?#]/.test(path)) {
+    throw new Error("Path GitHub inválido.");
+  }
+  return path;
+}
+
+function safeState(value: unknown): "open" | "closed" | "all" {
+  const state = String(value ?? "open").trim().toLowerCase();
+  return state === "closed" || state === "all" ? state : "open";
+}
+
+function mutationBlocked(): McpToolResult {
+  return {
+    ok: false,
+    error: "MCP_MUTATION_REQUIRES_HOCKER_ONE_OWNER_GATE",
+  };
+}
 
 export class GitHubMcpConnector extends McpConnector {
   private token: string;
@@ -42,24 +233,33 @@ export class GitHubMcpConnector extends McpConnector {
       transport: "http",
       timeoutMs: 30_000,
       enabled: true,
-      requiredEnv: ["GITHUB_TOKEN"],
+      requiredEnv: [],
     };
     super(config);
-    this.token = String(process.env.GITHUB_TOKEN ?? process.env.HOCKER_GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "");
+    this.token = String(
+      process.env.GITHUB_TOKEN ??
+        process.env.HOCKER_GITHUB_TOKEN ??
+        process.env.GH_TOKEN ??
+        "",
+    ).trim();
+  }
+
+  override isConfigured(): boolean {
+    return this.token.length > 0;
   }
 
   async initialize(): Promise<{ capabilities: string[]; tools: McpToolSchema[] }> {
     if (!this.isConfigured()) {
-      this.markError("GITHUB_TOKEN missing");
+      this.markError("GitHub token missing");
       return { capabilities: [], tools: [] };
     }
-    const connected = await this.ping();
-    if (!connected) {
+    if (!(await this.ping())) {
       this.markError("GitHub API ping failed");
       return { capabilities: [], tools: [] };
     }
+
     this.setTools(GITHUB_TOOLS);
-    this.markConnected(["repos", "issues", "pull-requests", "branches", "commits"]);
+    this.markConnected(["repository-read", "owner-gated-mutations"]);
     return { capabilities: this.state.capabilities, tools: GITHUB_TOOLS };
   }
 
@@ -84,29 +284,12 @@ export class GitHubMcpConnector extends McpConnector {
     };
   }
 
-  async callTool(toolName: string, args: Record<string, unknown>): Promise<McpToolResult> {
-    if (!this.isConfigured()) return { ok: false, error: "GitHub not configured" };
-    try {
-      switch (toolName) {
-        case "repo.get": return await this.repoGet(args);
-        case "repo.list_tree": return await this.listTree(args);
-        case "repo.read_file": return await this.readFile(args);
-        case "repo.create_branch": return await this.createBranch(args);
-        case "repo.create_commit": return await this.createCommit(args);
-        case "repo.create_pr": return await this.createPR(args);
-        case "repo.list_prs": return await this.listPRs(args);
-        case "repo.list_issues": return await this.listIssues(args);
-        case "repo.create_issue": return await this.createIssue(args);
-        default: return { ok: false, error: `Unknown tool: ${toolName}` };
-      }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
-    }
-  }
-
-  private async gh(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: unknown }> {
-    const res = await fetch(`${GITHUB_API}${url}`, {
-      ...init,
+  private async gh(endpoint: string): Promise<{
+    ok: boolean;
+    status: number;
+    data: unknown;
+  }> {
+    const res = await fetch(`${GITHUB_API}${endpoint}`, {
       headers: this.headers(),
       signal: AbortSignal.timeout(this.config.timeoutMs),
     });
@@ -114,85 +297,182 @@ export class GitHubMcpConnector extends McpConnector {
     return { ok: res.ok, status: res.status, data };
   }
 
-  private async repoGet(args: Record<string, unknown>): Promise<McpToolResult> {
-    const { data, ok, status } = await this.gh(`/repos/${args.owner}/${args.repo}`);
+  async callTool(toolName: string, args: Record<string, unknown>): Promise<McpToolResult> {
+    if (!this.isConfigured()) return { ok: false, error: "GitHub not configured" };
+    if (MUTATION_TOOLS.has(toolName)) return mutationBlocked();
+
+    try {
+      switch (toolName) {
+        case "get_repository":
+          return await this.getRepository(args);
+        case "list_tree":
+          return await this.listTree(args);
+        case "get_file_contents":
+          return await this.getFileContents(args);
+        case "list_pull_requests":
+          return await this.listPullRequests(args);
+        case "list_issues":
+          return await this.listIssues(args);
+        default:
+          return { ok: false, error: `Unknown tool: ${toolName}` };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  }
+
+  private async getRepository(args: Record<string, unknown>): Promise<McpToolResult> {
+    const target = repository(args);
+    const { data, ok, status } = await this.gh(
+      `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}`,
+    );
     if (!ok) return { ok: false, error: `HTTP ${status}`, data };
-    return { ok: true, data: { full_name: (data as { full_name?: string }).full_name, default_branch: (data as { default_branch?: string }).default_branch, private: (data as { private?: boolean }).private } };
+
+    const item = data as Record<string, unknown>;
+    return {
+      ok: true,
+      data: {
+        full_name: item.full_name,
+        default_branch: item.default_branch,
+        private: item.private,
+        archived: item.archived,
+        pushed_at: item.pushed_at,
+      },
+    };
   }
 
   private async listTree(args: Record<string, unknown>): Promise<McpToolResult> {
-    const ref = String(args.ref ?? "HEAD");
-    const path = String(args.path ?? "");
-    const { data, ok, status } = await this.gh(`/repos/${args.owner}/${args.repo}/contents/${path}?ref=${ref}`);
+    const target = repository(args);
+    const ref = safeRef(args.ref);
+    const requestedPath = safePath(args.path, true).toLowerCase();
+    const limit = Math.min(Math.max(Math.trunc(Number(args.limit ?? 500)), 1), 1000);
+    const { data, ok, status } = await this.gh(
+      `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+    );
     if (!ok) return { ok: false, error: `HTTP ${status}`, data };
-    const items = Array.isArray(data) ? data : [data];
-    return { ok: true, data: items.map((i: Record<string, unknown>) => ({ name: i.name, type: i.type, path: i.path, size: i.size })), meta: { count: items.length } };
+
+    const response = data as {
+      truncated?: boolean;
+      tree?: Array<Record<string, unknown>>;
+    };
+    const tree = (response.tree ?? [])
+      .filter((item) => typeof item.path === "string")
+      .filter((item) => {
+        if (!requestedPath) return true;
+        const path = String(item.path).toLowerCase();
+        return path === requestedPath || path.startsWith(`${requestedPath}/`);
+      });
+    const selected = tree.slice(0, limit).map((item) => ({
+      path: item.path,
+      type: item.type,
+      size: item.size ?? null,
+      sha: item.sha ?? null,
+    }));
+
+    return {
+      ok: true,
+      data: selected,
+      meta: {
+        repository: target.fullName,
+        count: selected.length,
+        truncated: Boolean(response.truncated) || tree.length > selected.length,
+      },
+    };
   }
 
-  private async readFile(args: Record<string, unknown>): Promise<McpToolResult> {
-    const ref = String(args.ref ?? "HEAD");
-    const { data, ok, status } = await this.gh(`/repos/${args.owner}/${args.repo}/contents/${args.path}?ref=${ref}`);
+  private async getFileContents(args: Record<string, unknown>): Promise<McpToolResult> {
+    const target = repository(args);
+    const ref = safeRef(args.ref);
+    const path = safePath(args.path);
+    const { data, ok, status } = await this.gh(
+      `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`,
+    );
     if (!ok) return { ok: false, error: `HTTP ${status}`, data };
-    const d = data as { content?: string; encoding?: string };
-    const content = d.encoding === "base64" && d.content ? Buffer.from(d.content.replace(/\n/g, ""), "base64").toString("utf-8") : "";
-    return { ok: true, data: { content } };
+
+    if (Array.isArray(data)) {
+      return {
+        ok: true,
+        data: data.map((item: Record<string, unknown>) => ({
+          name: item.name,
+          path: item.path,
+          type: item.type,
+          size: item.size,
+          sha: item.sha,
+        })),
+        meta: { repository: target.fullName, path, type: "directory" },
+      };
+    }
+
+    const item = data as {
+      content?: string;
+      encoding?: string;
+      size?: number;
+      sha?: string;
+      path?: string;
+    };
+    if (item.encoding !== "base64" || !item.content) {
+      return { ok: false, error: "GitHub no devolvió un archivo de texto base64." };
+    }
+
+    const decoded = Buffer.from(item.content.replace(/\n/g, ""), "base64").toString("utf8");
+    const bytes = Buffer.byteLength(decoded, "utf8");
+    const content = bytes > MAX_FILE_BYTES ? decoded.slice(0, MAX_FILE_BYTES) : decoded;
+
+    return {
+      ok: true,
+      data: {
+        repository: target.fullName,
+        ref,
+        path: item.path ?? path,
+        sha: item.sha ?? null,
+        size: item.size ?? bytes,
+        truncated: bytes > MAX_FILE_BYTES,
+        content,
+      },
+    };
   }
 
-  private async createBranch(args: Record<string, unknown>): Promise<McpToolResult> {
-    const from = String(args.from ?? "main");
-    const { data: refData, ok, status } = await this.gh(`/repos/${args.owner}/${args.repo}/git/refs/heads/${from}`);
-    if (!ok) return { ok: false, error: `Base ref not found: HTTP ${status}` };
-    const sha = (refData as { object?: { sha?: string } }).object?.sha;
-    if (!sha) return { ok: false, error: "Could not resolve base SHA" };
-    const res = await this.gh(`/repos/${args.owner}/${args.repo}/git/refs`, {
-      method: "POST",
-      body: JSON.stringify({ ref: `refs/heads/${args.branch}`, sha }),
-    });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, data: res.data };
-    return { ok: true, data: { branch: args.branch, from, sha } };
-  }
+  private async listPullRequests(args: Record<string, unknown>): Promise<McpToolResult> {
+    const target = repository(args);
+    const state = safeState(args.state);
+    const { data, ok, status } = await this.gh(
+      `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/pulls?state=${state}&per_page=30`,
+    );
+    if (!ok) return { ok: false, error: `HTTP ${status}`, data };
 
-  private async createCommit(args: Record<string, unknown>): Promise<McpToolResult> {
-    const res = await this.gh(`/repos/${args.owner}/${args.repo}/contents/${args.path}`, {
-      method: "PUT",
-      body: JSON.stringify({ message: args.message, content: Buffer.from(String(args.content), "utf-8").toString("base64"), branch: args.branch }),
-    });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, data: res.data };
-    const d = res.data as { commit?: { sha?: string } };
-    return { ok: true, data: { path: args.path, branch: args.branch, sha: d.commit?.sha } };
-  }
-
-  private async createPR(args: Record<string, unknown>): Promise<McpToolResult> {
-    const res = await this.gh(`/repos/${args.owner}/${args.repo}/pulls`, {
-      method: "POST",
-      body: JSON.stringify({ title: args.title, head: args.head, base: args.base, body: args.body ?? "" }),
-    });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, data: res.data };
-    const d = res.data as { number?: number; html_url?: string };
-    return { ok: true, data: { number: d.number, url: d.html_url } };
-  }
-
-  private async listPRs(args: Record<string, unknown>): Promise<McpToolResult> {
-    const state = String(args.state ?? "open");
-    const { data, ok, status } = await this.gh(`/repos/${args.owner}/${args.repo}/pulls?state=${state}&per_page=30`);
-    if (!ok) return { ok: false, error: `HTTP ${status}` };
-    return { ok: true, data: (data as Record<string, unknown>[]).map((p) => ({ number: p.number, title: p.title, state: p.state, user: (p.user as { login?: string })?.login })) };
+    return {
+      ok: true,
+      data: (data as Record<string, unknown>[]).map((item) => ({
+        number: item.number,
+        title: item.title,
+        state: item.state,
+        draft: item.draft,
+        head: (item.head as Record<string, unknown> | undefined)?.ref,
+        base: (item.base as Record<string, unknown> | undefined)?.ref,
+      })),
+    };
   }
 
   private async listIssues(args: Record<string, unknown>): Promise<McpToolResult> {
-    const state = String(args.state ?? "open");
-    const { data, ok, status } = await this.gh(`/repos/${args.owner}/${args.repo}/issues?state=${state}&per_page=30`);
-    if (!ok) return { ok: false, error: `HTTP ${status}` };
-    return { ok: true, data: (data as Record<string, unknown>[]).map((i) => ({ number: i.number, title: i.title, state: i.state })) };
-  }
+    const target = repository(args);
+    const state = safeState(args.state);
+    const { data, ok, status } = await this.gh(
+      `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues?state=${state}&per_page=30`,
+    );
+    if (!ok) return { ok: false, error: `HTTP ${status}`, data };
 
-  private async createIssue(args: Record<string, unknown>): Promise<McpToolResult> {
-    const res = await this.gh(`/repos/${args.owner}/${args.repo}/issues`, {
-      method: "POST",
-      body: JSON.stringify({ title: args.title, body: args.body ?? "", labels: args.labels ?? [] }),
-    });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, data: res.data };
-    const d = res.data as { number?: number; html_url?: string };
-    return { ok: true, data: { number: d.number, url: d.html_url } };
+    return {
+      ok: true,
+      data: (data as Record<string, unknown>[])
+        .filter((item) => !("pull_request" in item))
+        .map((item) => ({
+          number: item.number,
+          title: item.title,
+          state: item.state,
+        })),
+    };
   }
 }
