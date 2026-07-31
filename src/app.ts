@@ -984,6 +984,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
         tool_calls_parsed: totalParsed,
         tool_calls_executed: totalExecuted,
         tool_calls_deferred: totalDeferred,
+        deferred_actions: deferredMcpActions,
       },
       controls: {
         allow_write: controls.allow_write,
