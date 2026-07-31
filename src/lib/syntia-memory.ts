@@ -18,7 +18,6 @@ function compact(value: string, max = 420): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
-
 function syntiaMemoryPriority(type: string): number {
   if (type === "memory.research_gate") return 100;
   if (type === "memory.correction") return 95;
@@ -110,7 +109,7 @@ export async function recordSyntiaInteraction(
     reply: string;
   },
 ): Promise<void> {
-  const message = `NOVA atendió una interacción con apoyo de ${args.agi_id}. Usuario: ${compact(
+  const message = `NOVA atendió una interacción. Perfil especializado asignado: ${args.agi_id}. Usuario: ${compact(
     args.user_message,
     180,
   )}`;
@@ -126,6 +125,7 @@ export async function recordSyntiaInteraction(
       thread_id: args.thread_id,
       intent: args.intent,
       agi_id: args.agi_id,
+      cooperation_verified: false,
       user_preview: compact(args.user_message, 240),
       reply_preview: compact(args.reply, 300),
       source: "syntia-memory",
