@@ -80,12 +80,12 @@ export async function requestVerifiableCooperation(params: {
         intent: params.intent,
       },
       request_id: message.message_id,
-      trace_id: params.trace_id,
       parent_message_id: message.message_id,
       write_policy: params.write_policy ?? "draft_only",
       requires_approval: false,
-      idempotency_key: params.idempotency_key,
-      max_attempts: params.max_attempts,
+      ...(params.trace_id ? { trace_id: params.trace_id } : {}),
+      ...(params.idempotency_key ? { idempotency_key: params.idempotency_key } : {}),
+      ...(params.max_attempts !== undefined ? { max_attempts: params.max_attempts } : {}),
     });
 
     return {
