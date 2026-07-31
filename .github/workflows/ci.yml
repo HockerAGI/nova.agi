@@ -40,87 +40,77 @@ jobs:
           const appPath = 'src/app.ts';
           let app = fs.readFileSync(appPath, 'utf8');
 
-          const oldFactory = `  const requestRateLimiter = createRequestRateLimiter({
-            windowMs: Number(process.env.NOVA_RATE_LIMIT_WINDOW_MS ?? 60_000),
-            max: Number(process.env.NOVA_RATE_LIMIT_MAX ?? 60),
-            maxBuckets: Number(process.env.NOVA_RATE_LIMIT_MAX_BUCKETS ?? 10_000),
-          });`;
-          const newFactory = `  const requestRateLimiter = createRequestRateLimiter({
-            windowMs: Number(process.env.NOVA_RATE_LIMIT_WINDOW_MS ?? 60_000),
-            max: Number(process.env.NOVA_RATE_LIMIT_MAX ?? 60),
-          });`;
-
-          if (app.includes(oldFactory)) {
-            app = app.replace(oldFactory, newFactory);
-          } else if (!app.includes(newFactory)) {
-            throw new Error('Rate limiter factory block not found');
-          }
-
-          const oldConsume = `    const decision = requestRateLimiter.consume({
-              ip: req.ip,
-              headers: req.headers,
-            });
-            reply.header("X-RateLimit-Limit", decision.limit);
-            reply.header("X-RateLimit-Remaining", decision.remaining);
-            reply.header("X-RateLimit-Reset", Math.ceil(decision.resetAt / 1000));
-          
-            if (!decision.allowed) {
-              reply.header("Retry-After", decision.retryAfterSeconds);
-              return reply.code(429).send({
-                ok: false,
-                error: "RATE_LIMITED",
-                retry_after_seconds: decision.retryAfterSeconds,
-              });
-            }`;
-          const newConsume = `    let decision;
-            try {
-              decision = await requestRateLimiter.consume({
-                ip: req.ip,
-                headers: req.headers,
-              });
-            } catch {
-              reply.header("Retry-After", 5);
-              return reply.code(503).send({
-                ok: false,
-                error: "RATE_LIMIT_UNAVAILABLE",
-                retry_after_seconds: 5,
-              });
+          if (!app.includes('await requestRateLimiter.consume')) {
+            const factoryStart = app.indexOf('  const requestRateLimiter = createRequestRateLimiter({');
+            const factoryEndMarker = '\n  });';
+            const factoryEnd = app.indexOf(factoryEndMarker, factoryStart);
+            if (factoryStart < 0 || factoryEnd < 0) {
+              throw new Error('Rate limiter factory block not found');
             }
-          
-            reply.header("X-RateLimit-Limit", decision.limit);
-            reply.header("X-RateLimit-Remaining", decision.remaining);
-            reply.header("X-RateLimit-Reset", Math.ceil(decision.resetAt / 1000));
-          
-            if (!decision.allowed) {
-              reply.header("Retry-After", decision.retryAfterSeconds);
-              return reply.code(429).send({
-                ok: false,
-                error: "RATE_LIMITED",
-                retry_after_seconds: decision.retryAfterSeconds,
-              });
-            }`;
 
-          if (app.includes(oldConsume)) {
-            app = app.replace(oldConsume, newConsume);
-          } else if (!app.includes(newConsume)) {
-            throw new Error('Rate limiter consume block not found');
+            const newFactory = [
+              '  const requestRateLimiter = createRequestRateLimiter({',
+              '    windowMs: Number(process.env.NOVA_RATE_LIMIT_WINDOW_MS ?? 60_000),',
+              '    max: Number(process.env.NOVA_RATE_LIMIT_MAX ?? 60),',
+              '  });',
+            ].join('\n');
+            app = app.slice(0, factoryStart) + newFactory + app.slice(factoryEnd + factoryEndMarker.length);
+
+            const consumeStart = app.indexOf('    const decision = requestRateLimiter.consume({');
+            const hookEndMarker = '\n  });\n\n\n  app.get("/mesh/status"';
+            const consumeEnd = app.indexOf(hookEndMarker, consumeStart);
+            if (consumeStart < 0 || consumeEnd < 0) {
+              throw new Error('Rate limiter consume block not found');
+            }
+
+            const newConsume = [
+              '    let decision;',
+              '    try {',
+              '      decision = await requestRateLimiter.consume({',
+              '        ip: req.ip,',
+              '        headers: req.headers,',
+              '      });',
+              '    } catch {',
+              '      reply.header("Retry-After", 5);',
+              '      return reply.code(503).send({',
+              '        ok: false,',
+              '        error: "RATE_LIMIT_UNAVAILABLE",',
+              '        retry_after_seconds: 5,',
+              '      });',
+              '    }',
+              '',
+              '    reply.header("X-RateLimit-Limit", decision.limit);',
+              '    reply.header("X-RateLimit-Remaining", decision.remaining);',
+              '    reply.header("X-RateLimit-Reset", Math.ceil(decision.resetAt / 1000));',
+              '',
+              '    if (!decision.allowed) {',
+              '      reply.header("Retry-After", decision.retryAfterSeconds);',
+              '      return reply.code(429).send({',
+              '        ok: false,',
+              '        error: "RATE_LIMITED",',
+              '        retry_after_seconds: decision.retryAfterSeconds,',
+              '      });',
+              '    }',
+            ].join('\n');
+            app = app.slice(0, consumeStart) + newConsume + app.slice(consumeEnd);
+            fs.writeFileSync(appPath, app);
           }
-
-          fs.writeFileSync(appPath, app);
 
           const testPath = 'tests/runtime-hardening.test.mjs';
           let tests = fs.readFileSync(testPath, 'utf8');
-          const anchor = `  assert.match(limiter, /createHash\\("sha256"\\)/);`;
-          const assertions = `${anchor}
-            assert.match(limiter, /consume_nova_rate_limit/);
-            assert.match(app, /await requestRateLimiter\\.consume/);
-            assert.match(app, /RATE_LIMIT_UNAVAILABLE/);`;
-
           if (!tests.includes('consume_nova_rate_limit')) {
-            if (!tests.includes(anchor)) {
+            const anchor = '  assert.match(limiter, /createHash\\("sha256"\\)/);';
+            const anchorIndex = tests.indexOf(anchor);
+            if (anchorIndex < 0) {
               throw new Error('Rate limiter test anchor not found');
             }
-            tests = tests.replace(anchor, assertions);
+            const assertions = [
+              anchor,
+              '  assert.match(limiter, /consume_nova_rate_limit/);',
+              '  assert.match(app, /await requestRateLimiter\\.consume/);',
+              '  assert.match(app, /RATE_LIMIT_UNAVAILABLE/);',
+            ].join('\n');
+            tests = tests.slice(0, anchorIndex) + assertions + tests.slice(anchorIndex + anchor.length);
             fs.writeFileSync(testPath, tests);
           }
           NODE
