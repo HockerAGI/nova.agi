@@ -33,35 +33,44 @@ jobs:
           ref: audit/owner-gate-resilience-20260730
           fetch-depth: 0
 
-      - name: Repair provider budget scope
+      - name: Repair provider fallback scope
         if: github.actor != 'github-actions[bot]'
         shell: bash
         run: |
           python <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src/app.ts')
           text = path.read_text()
-          text = text.replace(
-            '  const provider = providerOrder[0] ?? pickProvider(runtimePolicy.prefer_effective);',
+
+          text, provider_count = re.subn(
+            r'(?m)^\s*const provider = providerOrder\[0\] \?\? pickProvider\(runtimePolicy\.prefer_effective\);$',
             '  let provider = providerOrder[0] ?? pickProvider(runtimePolicy.prefer_effective);',
-            1,
+            text,
+            count=1,
           )
-          anchor = '''  if (providerOrder.length === 0) {
-            providerOrder.push(pickProvider(runtimePolicy.prefer_effective));
-          }
-          '''
-          insertion = anchor + '''
+
+          if 'const effectiveProviderOrder = budgetDecision.available;' not in text:
+            pattern = re.compile(
+              r'(  if \(providerOrder\.length === 0\) \{\n\s*providerOrder\.push\(pickProvider\(runtimePolicy\.prefer_effective\)\);\n  \})'
+            )
+            replacement = '''\1
+
           const budgetDecision = await providersWithinBudget(project_id, providerOrder);
           const effectiveProviderOrder = budgetDecision.available;
-          provider = effectiveProviderOrder[0] ?? provider;
-          '''
-          if 'const effectiveProviderOrder = budgetDecision.available;' not in text:
-            if anchor not in text:
-              raise SystemExit('provider order anchor missing')
-            text = text.replace(anchor, insertion, 1)
-          if 'let provider =' not in text or 'const effectiveProviderOrder' not in text:
-            raise SystemExit('provider budget scope repair incomplete')
+          provider = effectiveProviderOrder[0] ?? provider;'''
+            text, insert_count = pattern.subn(replacement, text, count=1)
+            if insert_count != 1:
+              raise SystemExit('provider fallback insertion point not found')
+
+          if 'let provider =' not in text:
+            raise SystemExit(f'provider declaration repair incomplete: {provider_count}')
+          if text.count('const effectiveProviderOrder = budgetDecision.available;') != 1:
+            raise SystemExit('effective provider order must be declared exactly once')
+          if text.count('providers: effectiveProviderOrder,') < 1:
+            raise SystemExit('completion fallback order not wired')
+
           path.write_text(text)
           PY
 
