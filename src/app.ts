@@ -851,7 +851,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
   const totalDeferred =
     nativeExecResults.filter((r) => r.needsApproval && !r.executed).length +
     (mcpIntegration?.toolCallsDeferred ?? 0);
-const deferredMcpActions = collectDeferredMcpOwnerGateDrafts([
+  const deferredMcpActions = collectDeferredMcpOwnerGateDrafts([
   ...nativeExecResults,
   ...(mcpIntegration?.results ?? []),
 ]);
