@@ -1,0 +1,106 @@
+name: Apply MCP Owner Gate bridge
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'feature/mcp-owner-gate-bridge-20260731' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/mcp-owner-gate-bridge-20260731
+          fetch-depth: 0
+
+      - name: Materialize deferred MCP drafts in chat metadata
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/app.ts')
+          text = path.read_text()
+
+          import_anchor = 'import type { ToolExecutionResult } from "./lib/mcp-tool-calling.js";'
+          import_line = 'import { collectDeferredMcpOwnerGateDrafts } from "./lib/mcp-owner-gate-drafts.js";'
+          if import_line not in text:
+            if import_anchor not in text:
+              raise SystemExit('MCP import anchor not found')
+            text = text.replace(import_anchor, import_anchor + '\n' + import_line, 1)
+
+          old_claims = '''    `AGI de apoyo activa: ${agi.name}.`,
+            "Si una AGI te apoya, dilo breve y natural: por ejemplo, HOSTIA me ayudó a revisar la operación. No lo conviertas en reporte técnico.",'''
+          new_claims = '''    `Perfil especializado seleccionado para orientar la respuesta: ${agi.name}.`,
+            "Seleccionar un perfil no demuestra cooperación IA↔IA. Solo afirma apoyo de otra AGI cuando exista una respuesta correlacionada y verificable.",'''
+          if old_claims in text:
+            text = text.replace(old_claims, new_claims, 1)
+
+          total_anchor = '''  const totalDeferred =
+            nativeExecResults.filter((r) => r.needsApproval && !r.executed).length +
+            (mcpIntegration?.toolCallsDeferred ?? 0);'''
+          total_insert = total_anchor + '''
+          const deferredMcpActions = collectDeferredMcpOwnerGateDrafts([
+            ...nativeExecResults,
+            ...(mcpIntegration?.results ?? []),
+          ]);'''
+          if 'const deferredMcpActions = collectDeferredMcpOwnerGateDrafts' not in text:
+            if total_anchor not in text:
+              raise SystemExit('total deferred anchor not found')
+            text = text.replace(total_anchor, total_insert, 1)
+
+          append_anchor = '''    mcp_tool_calls: totalParsed,
+            mcp_tool_executed: totalExecuted,
+            mcp_tool_deferred: totalDeferred,'''
+          append_replacement = append_anchor + '''
+            mcp_deferred_actions: deferredMcpActions.length,'''
+          if 'mcp_deferred_actions: deferredMcpActions.length' not in text:
+            if append_anchor not in text:
+              raise SystemExit('append metadata anchor not found')
+            text = text.replace(append_anchor, append_replacement, 1)
+
+          payload_anchor = '''      mcp: {
+                tools_available: nativeToolDefs.length,
+                tool_calls_parsed: totalParsed,
+                tool_calls_executed: totalExecuted,
+                tool_calls_deferred: totalDeferred,
+              },'''
+          payload_replacement = '''      mcp: {
+                tools_available: nativeToolDefs.length,
+                tool_calls_parsed: totalParsed,
+                tool_calls_executed: totalExecuted,
+                tool_calls_deferred: totalDeferred,
+                deferred_actions: deferredMcpActions,
+              },'''
+          if 'deferred_actions: deferredMcpActions' not in text:
+            if payload_anchor not in text:
+              raise SystemExit('public MCP metadata anchor not found')
+            text = text.replace(payload_anchor, payload_replacement, 1)
+
+          required = [
+            'collectDeferredMcpOwnerGateDrafts',
+            'deferred_actions: deferredMcpActions',
+            'mcp_deferred_actions: deferredMcpActions.length',
+            'Seleccionar un perfil no demuestra cooperación IA↔IA',
+          ]
+          for marker in required:
+            if marker not in text:
+              raise SystemExit(f'bridge marker missing: {marker}')
+
+          path.write_text(text)
+          PY
+
+      - name: Remove temporary workflow and commit
+        shell: bash
+        run: |
+          rm .github/workflows/apply-mcp-owner-gate-bridge.yml
+          git config user.name "hocker-audit-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/app.ts .github/workflows/apply-mcp-owner-gate-bridge.yml
+          git commit -m "feat(mcp): expose deferred drafts to Hocker ONE"
+          git push origin HEAD:feature/mcp-owner-gate-bridge-20260731
