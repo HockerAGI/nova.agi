@@ -23,6 +23,7 @@ jobs:
         run: |
           python <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src/app.ts')
           text = path.read_text()
@@ -34,53 +35,49 @@ jobs:
               raise SystemExit('MCP import anchor not found')
             text = text.replace(import_anchor, import_anchor + '\n' + import_line, 1)
 
-          old_claims = '''    `AGI de apoyo activa: ${agi.name}.`,
-            "Si una AGI te apoya, dilo breve y natural: por ejemplo, HOSTIA me ayudó a revisar la operación. No lo conviertas en reporte técnico.",'''
-          new_claims = '''    `Perfil especializado seleccionado para orientar la respuesta: ${agi.name}.`,
-            "Seleccionar un perfil no demuestra cooperación IA↔IA. Solo afirma apoyo de otra AGI cuando exista una respuesta correlacionada y verificable.",'''
-          if old_claims in text:
-            text = text.replace(old_claims, new_claims, 1)
+          text = text.replace(
+            '`AGI de apoyo activa: ${agi.name}.`,',
+            '`Perfil especializado seleccionado para orientar la respuesta: ${agi.name}.`,',
+            1,
+          )
+          text = text.replace(
+            '"Si una AGI te apoya, dilo breve y natural: por ejemplo, HOSTIA me ayudó a revisar la operación. No lo conviertas en reporte técnico.",',
+            '"Seleccionar un perfil no demuestra cooperación IA↔IA. Solo afirma apoyo de otra AGI cuando exista una respuesta correlacionada y verificable.",',
+            1,
+          )
 
-          total_anchor = '''  const totalDeferred =
-            nativeExecResults.filter((r) => r.needsApproval && !r.executed).length +
-            (mcpIntegration?.toolCallsDeferred ?? 0);'''
-          total_insert = total_anchor + '''
+          if 'const deferredMcpActions = collectDeferredMcpOwnerGateDrafts' not in text:
+            pattern = re.compile(
+              r'(\s*const totalDeferred =\s*\n\s*nativeExecResults\.filter\(\(r\) => r\.needsApproval && !r\.executed\)\.length \+\s*\n\s*\(mcpIntegration\?\.toolCallsDeferred \?\? 0\);)'
+            )
+            replacement = r'''\1
           const deferredMcpActions = collectDeferredMcpOwnerGateDrafts([
             ...nativeExecResults,
             ...(mcpIntegration?.results ?? []),
           ]);'''
-          if 'const deferredMcpActions = collectDeferredMcpOwnerGateDrafts' not in text:
-            if total_anchor not in text:
+            text, count = pattern.subn(replacement, text, count=1)
+            if count != 1:
               raise SystemExit('total deferred anchor not found')
-            text = text.replace(total_anchor, total_insert, 1)
 
-          append_anchor = '''    mcp_tool_calls: totalParsed,
-            mcp_tool_executed: totalExecuted,
-            mcp_tool_deferred: totalDeferred,'''
-          append_replacement = append_anchor + '''
-            mcp_deferred_actions: deferredMcpActions.length,'''
           if 'mcp_deferred_actions: deferredMcpActions.length' not in text:
-            if append_anchor not in text:
+            text, count = re.subn(
+              r'(\s*mcp_tool_deferred: totalDeferred,)',
+              r'\1\n    mcp_deferred_actions: deferredMcpActions.length,',
+              text,
+              count=1,
+            )
+            if count != 1:
               raise SystemExit('append metadata anchor not found')
-            text = text.replace(append_anchor, append_replacement, 1)
 
-          payload_anchor = '''      mcp: {
-                tools_available: nativeToolDefs.length,
-                tool_calls_parsed: totalParsed,
-                tool_calls_executed: totalExecuted,
-                tool_calls_deferred: totalDeferred,
-              },'''
-          payload_replacement = '''      mcp: {
-                tools_available: nativeToolDefs.length,
-                tool_calls_parsed: totalParsed,
-                tool_calls_executed: totalExecuted,
-                tool_calls_deferred: totalDeferred,
-                deferred_actions: deferredMcpActions,
-              },'''
           if 'deferred_actions: deferredMcpActions' not in text:
-            if payload_anchor not in text:
+            text, count = re.subn(
+              r'(\s*tool_calls_deferred: totalDeferred,\s*\n)(\s*\},)',
+              r'\1        deferred_actions: deferredMcpActions,\n\2',
+              text,
+              count=1,
+            )
+            if count != 1:
               raise SystemExit('public MCP metadata anchor not found')
-            text = text.replace(payload_anchor, payload_replacement, 1)
 
           required = [
             'collectDeferredMcpOwnerGateDrafts',
