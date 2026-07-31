@@ -27,17 +27,26 @@ export function chooseRuntime(
   defaultProvider: Provider,
   defaultMode: CompletionMode,
 ) {
-  const provider = resolveProvider(prefer, defaultProvider);
+  const requestedProvider = resolveProvider(prefer, defaultProvider);
   const resolvedMode = resolveMode(mode, defaultMode);
-  const ready = providerReady(provider);
+  const candidates: Provider[] = [];
 
-  const finalProvider: Provider = ready ? provider : "ollama";
-  const finalMode: CompletionMode = resolvedMode;
+  const push = (provider: Provider) => {
+    if (!candidates.includes(provider)) candidates.push(provider);
+  };
+
+  push(requestedProvider);
+  push(defaultProvider);
+  for (const provider of config.providerRouting.fallbacks) push(provider);
+  push("ollama");
+
+  const finalProvider = candidates.find((provider) => providerReady(provider)) ?? requestedProvider;
 
   return {
     provider: finalProvider,
-    mode: finalMode,
-    model: modelFor(finalProvider, finalMode),
+    mode: resolvedMode,
+    model: modelFor(finalProvider, resolvedMode),
+    ready: providerReady(finalProvider),
   };
 }
 
