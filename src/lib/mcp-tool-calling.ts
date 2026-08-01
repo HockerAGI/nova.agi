@@ -1,24 +1,21 @@
 /**
  * NOVA AGI — MCP Tool Calling Integration
  *
- * Bridges NOVA's chat flow to the MCP registry, enabling function-calling
- * while preserving the Hocker ONE Owner Gate.
- *
- * Security contract:
- *  - Read-only tools may execute directly.
- *  - Every mutating or ambiguous tool is prepared as an action draft.
- *  - NOVA never executes writes, deployments, commits, PRs or RPC calls.
- *  - Hocker ONE is the only component allowed to approve and execute drafts.
+ * Bridges NOVA's chat flow to the MCP registry while preserving the Hocker
+ * ONE Owner Gate. Proven read-only calls may execute directly; every mutation
+ * is returned as a signed approval draft and is never executed by nova.agi.
  */
 
 import { getMcpRegistry } from "./mcp/mcp-registry.js";
 import type { McpToolResult } from "./mcp/mcp-connector.js";
 
-// Keep this allowlist intentionally narrow. A tool is read-only only when its
-// contract guarantees that it cannot change remote state. Generic RPC calls
-// are excluded because a database function may mutate balances or permissions.
+const MAX_TOOL_CALLS = 8;
+const MAX_TOOL_ARGS_BYTES = 16 * 1024;
+const SAFE_TOOL_NAME = /^[a-z0-9_.:-]+$/i;
+
 const READ_ONLY_TOOL_PATTERNS = [
   /^supabase\.(table\.select|table\.count|schema\.list)$/,
+  /^github\.(get_repository|list_tree|get_file_contents|list_pull_requests|list_issues)$/,
   /^github\.(repo\.get|repo\.list_tree|repo\.read_file|repo\.list_prs|repo\.list_issues)$/,
   /^vercel\.(project\.list|project\.get|deployment\.list|deployment\.get|env\.list)$/,
   /^openai\.(embed\.create|moderate|model\.list|chat\.structured)$/,
@@ -56,14 +53,16 @@ export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
   if (!clean) return [];
 
   const calls: ParsedToolCall[] = [];
+  const push = (raw: unknown) => {
+    if (calls.length >= MAX_TOOL_CALLS) return;
+    const call = normalizeToolCall(raw);
+    if (call) calls.push(call);
+  };
 
   try {
     const parsed = JSON.parse(clean) as Record<string, unknown>;
     if (Array.isArray(parsed.tool_calls)) {
-      for (const tc of parsed.tool_calls) {
-        const call = normalizeToolCall(tc);
-        if (call) calls.push(call);
-      }
+      for (const item of parsed.tool_calls) push(item);
     }
     if (calls.length > 0) return calls;
   } catch {
@@ -72,13 +71,10 @@ export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
 
   const blockPattern = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
   let match: RegExpExecArray | null;
-  while ((match = blockPattern.exec(clean)) !== null) {
+  while (calls.length < MAX_TOOL_CALLS && (match = blockPattern.exec(clean)) !== null) {
     try {
       const blockContent = match[1];
-      if (!blockContent) continue;
-      const parsed = JSON.parse(blockContent.trim()) as Record<string, unknown>;
-      const call = normalizeToolCall(parsed);
-      if (call) calls.push(call);
+      if (blockContent) push(JSON.parse(blockContent.trim()));
     } catch {
       // Skip malformed tool blocks.
     }
@@ -86,11 +82,9 @@ export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
   if (calls.length > 0) return calls;
 
   const jsonBlockPattern = /\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}/g;
-  while ((match = jsonBlockPattern.exec(clean)) !== null) {
+  while (calls.length < MAX_TOOL_CALLS && (match = jsonBlockPattern.exec(clean)) !== null) {
     try {
-      const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-      const call = normalizeToolCall(parsed);
-      if (call) calls.push(call);
+      push(JSON.parse(match[0]));
     } catch {
       // Skip malformed inline blocks.
     }
@@ -100,17 +94,26 @@ export function parseToolCallsFromReply(reply: string): ParsedToolCall[] {
 }
 
 function normalizeToolCall(raw: unknown): ParsedToolCall | null {
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
 
   const name = String(obj.name ?? obj.tool ?? obj.function ?? "").trim();
-  if (!name || !name.includes(".")) return null;
+  if (!name || !name.includes(".") || name.length > 180 || !SAFE_TOOL_NAME.test(name)) {
+    return null;
+  }
 
   const rawArgs = obj.args ?? obj.arguments ?? obj.input ?? {};
   const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
     ? rawArgs as Record<string, unknown>
     : {};
-  const id = String(obj.id ?? `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+
+  if (Buffer.byteLength(JSON.stringify(args), "utf8") > MAX_TOOL_ARGS_BYTES) {
+    return null;
+  }
+
+  const id = String(obj.id ?? `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+    .trim()
+    .slice(0, 160);
 
   return { id, name, args };
 }
@@ -131,19 +134,14 @@ function buildOwnerGateDraft(call: ParsedToolCall): Record<string, unknown> {
   };
 }
 
-/**
- * Execute only proven read-only calls. All other calls are returned as drafts
- * so Hocker ONE can materialize, approve, lock, audit and execute them.
- */
 export async function executeToolCalls(
   calls: ParsedToolCall[],
   opts: { allowActions: boolean },
 ): Promise<ToolExecutionResult[]> {
-  void opts;
   const registry = getMcpRegistry();
   const results: ToolExecutionResult[] = [];
 
-  for (const call of calls) {
+  for (const call of calls.slice(0, MAX_TOOL_CALLS)) {
     const readOnly = isReadOnlyTool(call.name);
 
     if (!readOnly) {
@@ -152,11 +150,13 @@ export async function executeToolCalls(
         name: call.name,
         result: {
           ok: false,
-          error: "MCP_MUTATION_REQUIRES_HOCKER_ONE_OWNER_GATE",
-          data: buildOwnerGateDraft(call),
+          error: opts.allowActions
+            ? "MCP_MUTATION_REQUIRES_HOCKER_ONE_OWNER_GATE"
+            : "MCP_MUTATION_NOT_AUTHORIZED",
+          data: opts.allowActions ? buildOwnerGateDraft(call) : undefined,
         },
         executed: false,
-        needsApproval: true,
+        needsApproval: opts.allowActions,
       });
       continue;
     }
@@ -178,17 +178,16 @@ export function formatToolResultsForUser(results: ToolExecutionResult[]): string
   if (results.length === 0) return "";
 
   const lines: string[] = [];
-  for (const r of results) {
-    const status = r.result.ok ? "✓" : r.needsApproval ? "⏳" : "✗";
-    const toolLabel = r.name.replace(/\./g, " ");
+  for (const result of results) {
+    const status = result.result.ok ? "✓" : result.needsApproval ? "⏳" : "✗";
+    const toolLabel = result.name.replace(/\./g, " ");
 
-    if (r.needsApproval && !r.executed) {
+    if (result.needsApproval && !result.executed) {
       lines.push(`${status} ${toolLabel}: quedó preparada para aprobación en Hocker ONE.`);
-    } else if (r.result.ok) {
-      const summary = summarizeResult(r.result.data);
-      lines.push(`${status} ${toolLabel}: ${summary}`);
+    } else if (result.result.ok) {
+      lines.push(`${status} ${toolLabel}: ${summarizeResult(result.result.data)}`);
     } else {
-      lines.push(`${status} ${toolLabel}: ${r.result.error ?? "error"}`);
+      lines.push(`${status} ${toolLabel}: ${result.result.error ?? "error"}`);
     }
   }
 
@@ -203,7 +202,10 @@ function summarizeResult(data: unknown): string {
     if (typeof obj.count === "number") return `${obj.count} registros`;
     if (Array.isArray(obj.data)) return `${obj.data.length} elementos`;
     if (obj.url) return `disponible en ${obj.url}`;
-    if (obj.text) return `"${String(obj.text).slice(0, 80)}${String(obj.text).length > 80 ? "…" : ""}"`;
+    if (obj.text) {
+      const text = String(obj.text);
+      return `"${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"`;
+    }
     if (obj.content) return "contenido recibido";
     if (obj.branch) return `rama ${obj.branch} lista`;
     if (obj.number) return `#${obj.number} creado`;
@@ -211,18 +213,22 @@ function summarizeResult(data: unknown): string {
   return "ok";
 }
 
-export function buildToolMessages(results: ToolExecutionResult[]): Array<{ role: "tool"; content: string; name?: string }> {
-  return results.map((r) => ({
+export function buildToolMessages(results: ToolExecutionResult[]): Array<{
+  role: "tool";
+  content: string;
+  name?: string;
+}> {
+  return results.map((result) => ({
     role: "tool" as const,
     content: JSON.stringify({
-      id: r.id,
-      name: r.name,
-      ok: r.result.ok,
-      data: r.result.data,
-      error: r.result.error,
-      needs_approval: r.needsApproval,
+      id: result.id,
+      name: result.name,
+      ok: result.result.ok,
+      data: result.result.data,
+      error: result.result.error,
+      needs_approval: result.needsApproval,
     }),
-    name: r.name,
+    name: result.name,
   }));
 }
 
@@ -232,29 +238,28 @@ export async function integrateMcpToolCalls(
 ): Promise<McpChatIntegration> {
   const registry = getMcpRegistry();
   const tools = registry.getConnectedTools();
-
   const toolPromptBlock = registry.buildPromptBlock();
   const parsedCalls = parseToolCallsFromReply(reply);
-  const results = parsedCalls.length > 0 ? await executeToolCalls(parsedCalls, opts) : [];
+  const results = parsedCalls.length > 0
+    ? await executeToolCalls(parsedCalls, opts)
+    : [];
 
   return {
     toolsAvailable: tools.length,
     toolCallsParsed: parsedCalls.length,
-    toolCallsExecuted: results.filter((r) => r.executed).length,
-    toolCallsDeferred: results.filter((r) => r.needsApproval && !r.executed).length,
+    toolCallsExecuted: results.filter((result) => result.executed).length,
+    toolCallsDeferred: results.filter((result) => result.needsApproval && !result.executed).length,
     results,
     toolPromptBlock,
   };
 }
 
 export function mcpToolsPromptBlock(): string {
-  const registry = getMcpRegistry();
-  return registry.buildPromptBlock();
+  return getMcpRegistry().buildPromptBlock();
 }
 
 export async function initializeMcp(): Promise<void> {
-  const registry = getMcpRegistry();
-  await registry.initializeAll();
+  await getMcpRegistry().initializeAll();
 }
 
 export function mcpStatus(): {
@@ -264,8 +269,7 @@ export function mcpStatus(): {
   configured: number;
   totalTools: number;
 } {
-  const registry = getMcpRegistry();
-  const status = registry.getStatus();
+  const status = getMcpRegistry().getStatus();
   return {
     enabled: String(process.env.MCP_ENABLED ?? "true").toLowerCase() !== "false",
     providers: status.providers.length,
