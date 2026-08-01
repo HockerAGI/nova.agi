@@ -1,0 +1,96 @@
+name: One-time NOVA intent integrity patch
+
+on:
+  push:
+    branches:
+      - fix/codex-intent-integrity-20260801
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/codex-intent-integrity-20260801
+
+      - name: Apply exact audited replacements
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("src/app.ts")
+          source = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  '    project_id: z.string().min(1).default("hocker-one"),',
+                  '    project_id: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i).default("hocker-one"),',
+              ),
+              (
+                  '    message: z.string().min(1).optional(),\n    text: z.string().min(1).optional(),\n    user_id: z.string().nullable().optional(),',
+                  '    message: z.string().min(1).max(100_000).optional(),\n    text: z.string().min(1).max(100_000).optional(),\n    user_id: z.string().max(128).nullable().optional(),',
+              ),
+              (
+                  '  const app = Fastify({ logger: true });',
+                  '  const app = Fastify({ logger: true, bodyLimit: 512 * 1024 });',
+              ),
+              (
+                  '  const NOVA_PUBLIC_CHAT_RESPONSE_CLOAK_PATHS = new Set(["/chat", "/api/chat", "/api/v1/chat"]);',
+                  '  const NOVA_PUBLIC_CHAT_RESPONSE_CLOAK_PATHS = new Set([\n    "/chat",\n    "/api/chat",\n    "/api/v1/chat",\n    "/api/v1/nova/interact",\n  ]);',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one occurrence, found {count}: {old[:80]}")
+              source = source.replace(old, new)
+
+          pattern = re.compile(
+              r'  if \(asksWrite\) \{[\s\S]*?\n  \}\n\n  const asksTopology =',
+          )
+          source, count = pattern.subn(
+              '  // Mutating repository requests must preserve the model/MCP intent.\n'
+              '  // They are deferred to Hocker ONE Owner Gate instead of being replaced\n'
+              '  // with a fixed smoke-test branch, file or pull request.\n'
+              '  if (asksWrite) return [];\n\n'
+              '  const asksTopology =',
+              source,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected one natural GitHub write block, replaced {count}")
+
+          forbidden = [
+              "NOVA_NATURAL_EDIT_TEST.md",
+              "natural-docs-improvement",
+              "Prueba real de edición natural controlada.",
+          ]
+          for marker in forbidden:
+              if marker in source:
+                  raise SystemExit(f"Forbidden fixed-action marker remains: {marker}")
+
+          path.write_text(source, encoding="utf-8")
+
+          test = Path("tests/codex-intent-integrity.test.mjs")
+          test.write_text('''import assert from "node:assert/strict";\nimport { readFile } from "node:fs/promises";\nimport test from "node:test";\n\nconst read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");\n\ntest("NOVA preserves real Codex mutation intent", async () => {\n  const app = await read("src/app.ts");\n\n  assert.doesNotMatch(app, /NOVA_NATURAL_EDIT_TEST\\.md/);\n  assert.doesNotMatch(app, /natural-docs-improvement/);\n  assert.match(app, /if \\(asksWrite\\) return \\[\\];/);\n  assert.match(app, /deferred to Hocker ONE Owner Gate/);\n});\n\ntest("NOVA bounds chat inputs and cloaks every JSON chat route", async () => {\n  const app = await read("src/app.ts");\n\n  assert.match(app, /bodyLimit: 512 \\* 1024/);\n  assert.match(app, /project_id: z\\.string\\(\\)\\.regex/);\n  assert.match(app, /message: z\\.string\\(\\)\\.min\\(1\\)\\.max\\(100_000\\)/);\n  assert.match(app, /\\"\\/api\\/v1\\/nova\\/interact\\"/);\n});\n\ntest("Gemini and Anthropic report usage for budget accounting", async () => {\n  const gemini = await read("src/providers/gemini.ts");\n  const anthropic = await read("src/providers/anthropic.ts");\n\n  assert.match(gemini, /usageMetadata/);\n  assert.match(gemini, /promptTokenCount/);\n  assert.match(gemini, /candidatesTokenCount/);\n  assert.match(anthropic, /input_tokens/);\n  assert.match(anthropic, /output_tokens/);\n});\n''', encoding="utf-8")
+          PY
+
+          rm .github/workflows/one-time-intent-integrity-patch.yml
+
+      - name: Commit final branch state
+        shell: bash
+        run: |
+          git config user.name "hocker-hardening-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/app.ts tests/codex-intent-integrity.test.mjs .github/workflows/one-time-intent-integrity-patch.yml
+          git diff --cached --check
+          git commit -m "fix(nova): preserve Codex intent and bound chat inputs"
+          git push origin HEAD:fix/codex-intent-integrity-20260801
