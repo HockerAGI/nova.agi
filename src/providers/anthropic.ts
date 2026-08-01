@@ -25,6 +25,10 @@ type AnthropicContentBlock =
 
 type AnthropicResponse = {
   content?: AnthropicContentBlock[];
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
   error?: { message?: string };
 };
 
@@ -38,6 +42,22 @@ function toAnthropicTools(
     description: t.function.description,
     input_schema: t.function.parameters,
   }));
+}
+
+function normalizeUsage(
+  usage: AnthropicResponse["usage"],
+): CompletionResult["usage"] | undefined {
+  const tokensIn =
+    typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined;
+  const tokensOut =
+    typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined;
+
+  if (tokensIn === undefined && tokensOut === undefined) return undefined;
+
+  const normalized: NonNullable<CompletionResult["usage"]> = {};
+  if (tokensIn !== undefined) normalized.tokens_in = tokensIn;
+  if (tokensOut !== undefined) normalized.tokens_out = tokensOut;
+  return normalized;
 }
 
 export async function anthropicRespond(args: {
@@ -108,14 +128,21 @@ export async function anthropicRespond(args: {
     }
 
     const text = textParts.join("").trim();
+    const usage = normalizeUsage(json.usage);
     const result: CompletionWithTools = {
       provider: "anthropic",
       model: args.model,
       text,
       fallbackUsed: false,
     };
+    if (usage) result.usage = usage;
     if (toolCalls.length > 0) result.toolCalls = toolCalls;
     return result;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Anthropic timeout después de ${args.timeoutMs}ms.`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
