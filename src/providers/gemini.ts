@@ -41,6 +41,11 @@ type GeminiCandidate = {
 
 type GeminiResponse = {
   candidates?: GeminiCandidate[];
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
   error?: { message?: string };
 };
 
@@ -81,6 +86,22 @@ function toGeminiTools(
     description: t.function.description,
     parameters: t.function.parameters,
   }));
+}
+
+function normalizeUsage(
+  usage: GeminiResponse["usageMetadata"],
+): CompletionResult["usage"] | undefined {
+  const tokensIn =
+    typeof usage?.promptTokenCount === "number" ? usage.promptTokenCount : undefined;
+  const tokensOut =
+    typeof usage?.candidatesTokenCount === "number" ? usage.candidatesTokenCount : undefined;
+
+  if (tokensIn === undefined && tokensOut === undefined) return undefined;
+
+  const normalized: NonNullable<CompletionResult["usage"]> = {};
+  if (tokensIn !== undefined) normalized.tokens_in = tokensIn;
+  if (tokensOut !== undefined) normalized.tokens_out = tokensOut;
+  return normalized;
 }
 
 export async function geminiRespond(args: {
@@ -154,12 +175,14 @@ export async function geminiRespond(args: {
     }
 
     const text = textParts.join("").trim();
+    const usage = normalizeUsage(json.usageMetadata);
     const result: CompletionWithTools = {
       provider: "gemini",
       model: args.model,
       text,
       fallbackUsed: false,
     };
+    if (usage) result.usage = usage;
     if (toolCalls.length > 0) result.toolCalls = toolCalls;
     return result;
   } catch (error) {
