@@ -5,6 +5,16 @@ import { signCommand } from "./security.js";
 import { isSupportedCommand, routeNodeForCommand, isWriteCommand } from "./command-policy.js";
 import type { ActionItem, ActionRow, JsonObject } from "../types.js";
 
+const ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function legacyCommandQueueEnabled(): boolean {
+  return ENABLED_VALUES.has(
+    String(process.env.NOVA_LEGACY_COMMAND_QUEUE_ENABLED ?? "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
 function commandSecret(): string {
   return String(
     process.env.HOCKER_COMMAND_HMAC_SECRET ??
@@ -101,6 +111,14 @@ export async function enqueueActions(
     needsApproval: boolean;
   },
 ): Promise<ActionRow[]> {
+  // nova.agi runs in Railway with service-role access, but it must not write
+  // commands directly. Productive mutations travel as deferred MCP drafts and
+  // Hocker ONE materializes them only after role checks and Owner Gate review.
+  // The legacy queue remains available solely as an explicit break-glass path.
+  if (!legacyCommandQueueEnabled()) {
+    return [];
+  }
+
   const now = new Date().toISOString();
   const secret = commandSecret();
 
