@@ -23,6 +23,8 @@ test("GitHub MCP uses Hocker ONE-compatible contracts and repository allowlist",
   assert.match(connector, /create_pull_request/);
   assert.match(connector, /NOVA_GITHUB_ALLOWED_REPOS/);
   assert.match(connector, /HockerAGI\/hocker-node-agent/);
+  assert.match(connector, /HockerAGI\/chido\.casino/);
+  assert.match(connector, /HockerAGI\/hocker\.agi/);
   assert.match(connector, /MCP_MUTATION_REQUIRES_HOCKER_ONE_OWNER_GATE/);
   assert.match(calling, /github\\\.\(get_repository\|list_tree\|get_file_contents/);
 });
