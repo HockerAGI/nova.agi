@@ -18,6 +18,7 @@ test("Railway promotes only a dependency-aware NOVA runtime", async () => {
   const railway = JSON.parse(await read("railway.json"));
   const index = await read("src/index.ts");
   const readiness = await read("src/lib/runtime-readiness.ts");
+  const worker = await read("src/lib/agi-worker-loop.ts");
 
   assert.equal(railway.deploy.healthcheckPath, "/health/ready");
   assert.match(index, /app\.get\("\/health\/ready"/);
@@ -26,6 +27,9 @@ test("Railway promotes only a dependency-aware NOVA runtime", async () => {
   assert.match(readiness, /NO_PROVIDER_CONFIGURED/);
   assert.match(readiness, /AGI_WORKER_DISABLED/);
   assert.match(readiness, /DATABASE_TIMEOUT/);
+  assert.match(readiness, /PROJECT_NOT_FOUND/);
+  assert.match(readiness, /worker\.last_successful_tick_at/);
+  assert.match(worker, /last_successful_tick_at = new Date\(\)\.toISOString\(\)/);
 });
 
 test("NOVA writes a real runtime heartbeat without exposing secrets", async () => {
@@ -34,8 +38,10 @@ test("NOVA writes a real runtime heartbeat without exposing secrets", async () =
 
   assert.match(heartbeat, /from\("nodes"\)\.upsert/);
   assert.match(heartbeat, /last_seen_at: now/);
-  assert.match(heartbeat, /status: "online"|writeHeartbeat\(status\)/);
+  assert.match(heartbeat, /last_successful_tick_at: worker\.last_successful_tick_at/);
   assert.match(heartbeat, /writeHeartbeat\("offline"\)/);
+  assert.match(heartbeat, /const pendingBeat = activeBeat/);
+  assert.match(heartbeat, /if \(pendingBeat\) await pendingBeat/);
   assert.match(index, /startNovaRuntimeHeartbeat/);
   assert.doesNotMatch(heartbeat, /SUPABASE_SERVICE_ROLE_KEY|NOVA_ORCHESTRATOR_KEY|GITHUB_TOKEN/);
 });
