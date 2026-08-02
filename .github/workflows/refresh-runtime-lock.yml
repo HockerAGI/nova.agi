@@ -1,0 +1,51 @@
+name: Refresh Runtime Lockfile
+
+on:
+  push:
+    branches:
+      - fix/runtime-readiness-heartbeat-20260802
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-runtime-lock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: fix/runtime-readiness-heartbeat-20260802
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Regenerate lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Verify deprecated parser is absent
+        run: |
+          ! grep -q '"node_modules/jpeg-exif"' package-lock.json
+          node -e "const lock=require('./package-lock.json'); if(lock.packages['node_modules/pdfkit']?.version !== '0.19.1') process.exit(1)"
+
+      - name: Commit lockfile
+        run: |
+          if git diff --quiet -- package-lock.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "chore(deps): refresh runtime lockfile"
+          git push origin HEAD:fix/runtime-readiness-heartbeat-20260802
