@@ -4,6 +4,8 @@ import { buildNovaApp } from "./app.js";
 import { config } from "./config.js";
 import { startAgiWorkerLoop } from "./lib/agi-worker-loop.js";
 import { getMcpRegistry } from "./lib/mcp/mcp-registry.js";
+import { startNovaRuntimeHeartbeat } from "./lib/runtime-heartbeat.js";
+import { getNovaRuntimeReadiness } from "./lib/runtime-readiness.js";
 import { resolveNovaListenHost } from "./lib/runtime-listener.js";
 import { agiWorkerRoutes } from "./routes/agi-workers.js";
 
@@ -26,9 +28,16 @@ export async function startServer() {
     warn: (message) => app.log.warn(message),
     error: (message) => app.log.error(message),
   });
+  let stopRuntimeHeartbeat: () => Promise<void> = async () => undefined;
+
+  app.get("/health/ready", async (_request, reply) => {
+    const readiness = await getNovaRuntimeReadiness();
+    return reply.code(readiness.ok ? 200 : 503).send(readiness);
+  });
 
   app.addHook("onClose", async () => {
     stopWorkerLoop();
+    await stopRuntimeHeartbeat();
   });
 
   getMcpRegistry()
@@ -44,6 +53,10 @@ export async function startServer() {
 
   const host = resolveNovaListenHost();
   await app.listen({ port: config.port, host });
+  stopRuntimeHeartbeat = startNovaRuntimeHeartbeat({
+    info: (message) => app.log.info(message),
+    warn: (message) => app.log.warn(message),
+  });
   app.log.info(`[NOVA AGI] listening on ${host}:${config.port} with verifiable AGI workers`);
 }
 
