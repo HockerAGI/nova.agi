@@ -1,54 +1,104 @@
 # NOVA Orchestrator — Deployment Checklist
 
-Resumen mínimo para desplegar nova.agi en producción.
+Checklist verificable para desplegar `nova.agi` en producción.
 
-1) Node.js version
-- Este servicio requiere Node 22.x (declarado en package.json `engines.node`).
-- En plataformas (Railway, Cloud Run, Docker) asegúrate de usar Node 22.
+## 1. Runtime
 
-2) Supabase & secrets
-- Variables obligatorias (server-only):
-  - SUPABASE_URL
-  - SUPABASE_SERVICE_ROLE_KEY
-  - NOVA_ORCHESTRATOR_KEY (en producción)
-  - HOCKER_COMMAND_HMAC_SECRET
-- Nunca exponer `SUPABASE_SERVICE_ROLE_KEY` en variables públicas o en el frontend.
+- Node.js 22.x.
+- Puerto por defecto: `8080`.
+- Proceso: `node dist/index.js`.
+- `/health`: liveness mínima del proceso.
+- `/health/ready`: readiness real usada por Railway.
 
-3) Build & run
-- Para desarrollo:
+## 2. Variables obligatorias
+
+Variables server-only:
+
 ```bash
-npm ci
-npm run dev
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+NOVA_ORCHESTRATOR_KEY=
+HOCKER_COMMAND_HMAC_SECRET=
+NODE_ENV=production
+PORT=8080
 ```
 
-- Para producción (build + run):
+Debe existir al menos un motor configurado:
+
 ```bash
-npm ci --production
+OPENAI_API_KEY=
+# o GEMINI_API_KEY=
+# o ANTHROPIC_API_KEY=
+```
+
+Para operación AGI automática verificable:
+
+```bash
+NOVA_AGI_WORKER_ENABLED=true
+NOVA_AGI_WORKER_ID=nova-worker-1
+NOVA_AGI_WORKER_PROJECT_ID=hocker-one
+NOVA_AGI_WORKER_INTERVAL_MS=30000
+NOVA_REQUIRE_WORKER_READY=true
+NOVA_RUNTIME_NODE_ID=nova-runtime-1
+NOVA_RUNTIME_HEARTBEAT_MS=30000
+```
+
+`NOVA_REQUIRE_WORKER_READY` es `true` por defecto en producción. Un despliegue sin worker activo no superará el readiness de Railway.
+
+## 3. Build reproducible
+
+No uses `npm ci --production` antes de compilar: TypeScript es una dependencia de desarrollo requerida por el build.
+
+```bash
+npm ci
+npm test
+npm run typecheck
 npm run build
+npm prune --omit=dev
 npm start
 ```
 
-4) Docker / Cloud Run / Railway
-- Dockerfile incluido; el runtime objetivo es Node 22.
-- Para Cloud Run: establecer `--region` igual a la región de la base de datos para minimizar latencia.
-- Health check: /health
+El Dockerfile ya implementa correctamente un build multi-stage: instala dependencias completas en `builder` y solo dependencias productivas en `runner`.
 
-5) Seguridad y despliegue ordenado
-- Aplicar migraciones en Supabase ANTES de desplegar el código que espera nuevas columnas/triggers.
-- Añadir las variables de entorno server-only en el vault de la plataforma (Railway secrets, Cloud Run env vars o GitHub Actions secrets).
-- Verificar que `NODE_ENV=production` y `PORT` estén configurados correctamente.
+## 4. Orden de despliegue
 
-6) Comprobaciones locales recomendadas
+1. Aplicar primero las migraciones Supabase requeridas.
+2. Configurar secretos en Railway/Cloud Run, nunca en Git.
+3. Desplegar con Dockerfile.
+4. Confirmar `200` en `/health/ready`.
+5. Confirmar un heartbeat reciente del nodo `nova-runtime-1` en `public.nodes`.
+6. Confirmar `last_tick_at` reciente y ausencia de error del worker.
+7. Probar una lectura MCP real desde NOVA.
+8. Probar una mutación como borrador bajo Hocker ONE Owner Gate; nunca escribir directo a `main`.
+
+## 5. Readiness
+
+`/health/ready` devuelve `503` cuando ocurre cualquiera de estos casos:
+
+- Supabase no responde;
+- no existe ningún motor configurado;
+- el worker requerido está desactivado;
+- el worker no ha ejecutado un tick;
+- el último tick terminó con error.
+
+El payload no expone secretos ni nombres internos de credenciales.
+
+## 6. Heartbeat
+
+El runtime actualiza `public.nodes` con:
+
+- `id = nova-runtime-1` por defecto;
+- `last_seen_at` real;
+- estado del proceso;
+- worker habilitado, último tick y evidencia de tarea;
+- estado `offline` durante un cierre controlado.
+
+## 7. Observabilidad
+
+Langfuse es opcional. Las claves deben permanecer server-only:
+
 ```bash
-# typecheck
-npm run typecheck
-# build
-npm run build
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
-
-7) Observabilidad
-- Recomendado activar Langfuse/observability con claves en entorno si se utiliza `langfuse-node`.
-
----
-
-He agregado este checklist para alinear la operativa con hocker.one: Node 22.x y migraciones Supabase primero. Si quieres que aplique más cambios automáticos (p. ej. saneamiento extra de config, validaciones runtime o eliminación de archivos duplicados), dime y procedo con commits a main.

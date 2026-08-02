@@ -15,6 +15,7 @@ export type AgiWorkerLoopState = {
   assigned_agi: string | null;
   interval_ms: number;
   last_tick_at: string | null;
+  last_successful_tick_at: string | null;
   last_task_id: string | null;
   last_result_hash: string | null;
   last_error: string | null;
@@ -28,6 +29,7 @@ const state: AgiWorkerLoopState = {
   assigned_agi: null,
   interval_ms: 30_000,
   last_tick_at: null,
+  last_successful_tick_at: null,
   last_task_id: null,
   last_result_hash: null,
   last_error: null,
@@ -89,6 +91,7 @@ export function startAgiWorkerLoop(logger: WorkerLoopLogger): () => void {
         logger.info(`[NOVA AGI WORKER] completed task ${result.task.id} with evidence`);
       }
       state.last_error = null;
+      state.last_successful_tick_at = new Date().toISOString();
     } catch (error) {
       const message = error instanceof Error ? error.message : "AGI_WORKER_LOOP_FAILED";
       state.last_error = message;

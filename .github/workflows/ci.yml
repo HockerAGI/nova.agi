@@ -38,6 +38,11 @@ jobs:
       - name: Install reproducibly
         run: npm ci
 
+      - name: Verify dependency remediation
+        run: |
+          ! grep -q '"node_modules/jpeg-exif"' package-lock.json
+          node -e "const lock=require('./package-lock.json'); if(lock.packages['node_modules/pdfkit']?.version !== '0.19.1') process.exit(1)"
+
       - name: Regression tests
         run: npm test
 
@@ -48,4 +53,7 @@ jobs:
         run: npm run build
 
       - name: Production dependency audit
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=low
+
+      - name: Full dependency audit
+        run: npm audit --audit-level=high

@@ -3,6 +3,21 @@ import { z } from "zod";
 
 dotenv.config();
 
+const strictBoolean = z.preprocess((value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off", ""].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8080),
   NODE_ENV: z.enum(["development", "production"]).default("production"),
@@ -17,10 +32,10 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   BASE44_API_KEY: z.string().optional(),
-  OLLAMA_ENABLED: z.coerce.boolean().default(false),
+  OLLAMA_ENABLED: strictBoolean.default(false),
   OLLAMA_BASE_URL: z.string().default("http://127.0.0.1:11434"),
 
-  BUDGETS_ENABLED: z.coerce.boolean().default(true),
+  BUDGETS_ENABLED: strictBoolean.default(true),
   BUDGET_OPENAI: z.coerce.number().int().nonnegative().default(100),
   BUDGET_GEMINI: z.coerce.number().int().nonnegative().default(100),
   BUDGET_ANTHROPIC: z.coerce.number().int().nonnegative().default(100),
@@ -36,7 +51,7 @@ const envSchema = z.object({
   LONG_CONTEXT_PROVIDER_ORDER: z.string().default("gemini,anthropic,openai,ollama,base44"),
   IMAGE_PROVIDER: z.enum(["openai", "gemini", "ollama"]).default("openai"),
   VIDEO_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
-  HIDE_PROVIDER_FROM_USER: z.coerce.boolean().default(true),
+  HIDE_PROVIDER_FROM_USER: strictBoolean.default(true),
 
   OPENAI_MODEL_AUTO: z.string().optional().default(""),
   OPENAI_MODEL_FAST: z.string().optional().default(""),
@@ -54,26 +69,28 @@ const envSchema = z.object({
   BASE44_MODEL_FAST: z.string().optional().default(""),
   BASE44_MODEL_PRO: z.string().optional().default(""),
 
-  NOVA_SURVIVAL_MODE_ENABLED: z.coerce.boolean().default(true),
+  NOVA_SURVIVAL_MODE_ENABLED: strictBoolean.default(true),
   NOVA_SURVIVAL_REPLY: z.string().optional().default(""),
 
   // ── MCP Connectors ──────────────────────────────────────────
-  // GitHub
   GITHUB_TOKEN: z.string().optional(),
   HOCKER_GITHUB_TOKEN: z.string().optional(),
   GH_TOKEN: z.string().optional(),
-  // Vercel
   VERCEL_TOKEN: z.string().optional(),
   HOCKER_VERCEL_TOKEN: z.string().optional(),
   VERCEL_TEAM_ID: z.string().optional(),
   HOCKER_VERCEL_TEAM_ID: z.string().optional(),
-  // OpenAI (MCP — additional capabilities beyond chat)
   HOCKER_OPENAI_API_KEY: z.string().optional(),
   OPENAI_ORG_ID: z.string().optional(),
-  // MCP master switch
-  MCP_ENABLED: z.coerce.boolean().default(true),
+  MCP_ENABLED: strictBoolean.default(true),
+
+  // ── Runtime evidence / readiness ────────────────────────────
+  NOVA_REQUIRE_WORKER_READY: strictBoolean.optional(),
+  NOVA_RUNTIME_NODE_ID: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i).default("nova-runtime-1"),
+  NOVA_RUNTIME_HEARTBEAT_MS: z.coerce.number().int().min(10_000).max(300_000).default(30_000),
+
   // Mirror node
-  NOVA_MIRROR_NODE_ENABLED: z.coerce.boolean().default(true),
+  NOVA_MIRROR_NODE_ENABLED: strictBoolean.default(true),
   NOVA_MIRROR_NODE_ID: z.string().default("nova-mirror-1"),
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV === "production" && !String(env.NOVA_ORCHESTRATOR_KEY ?? "").trim()) {
@@ -189,6 +206,12 @@ export const config = {
     },
   },
 
+  readiness: {
+    requireWorker: env.NOVA_REQUIRE_WORKER_READY ?? env.NODE_ENV === "production",
+    runtimeNodeId: env.NOVA_RUNTIME_NODE_ID,
+    heartbeatMs: env.NOVA_RUNTIME_HEARTBEAT_MS,
+  },
+
   mirrorNode: {
     enabled: env.NOVA_MIRROR_NODE_ENABLED,
     nodeId: env.NOVA_MIRROR_NODE_ID,
@@ -217,7 +240,6 @@ export function modelFor(provider: "openai" | "gemini" | "anthropic" | "ollama" 
     return mode === "pro" ? "claude-sonnet-4-6" : "claude-haiku-4-5-20251001";
   }
   if (provider === "base44") {
-    // Base44 manages model selection internally; these are labels only
     return mode === "pro" ? "base44-pro" : mode === "fast" ? "base44-fast" : "base44-auto";
   }
   return mode === "pro" ? "llama3.1:70b" : "llama3.1:8b";
