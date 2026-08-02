@@ -35,8 +35,21 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install reproducibly
-        run: npm ci
+      - name: Regenerate dependency lock reproducibly
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Verify dependency remediation
+        run: |
+          ! grep -q '"node_modules/jpeg-exif"' package-lock.json
+          node -e "const lock=require('./package-lock.json'); if(lock.packages['node_modules/pdfkit']?.version !== '0.19.1') process.exit(1)"
+
+      - name: Export regenerated lockfile
+        uses: actions/upload-artifact@v7
+        with:
+          name: nova-runtime-package-lock
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Regression tests
         run: npm test
