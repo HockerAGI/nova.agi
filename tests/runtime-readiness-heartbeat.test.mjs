@@ -22,10 +22,10 @@ test("Railway promotes only a dependency-aware NOVA runtime", async () => {
   assert.equal(railway.deploy.healthcheckPath, "/health/ready");
   assert.match(index, /app\.get\("\/health\/ready"/);
   assert.match(index, /getNovaRuntimeReadiness/);
+  assert.match(index, /reply\.code\(readiness\.ok \? 200 : 503\)/);
   assert.match(readiness, /NO_PROVIDER_CONFIGURED/);
   assert.match(readiness, /AGI_WORKER_DISABLED/);
   assert.match(readiness, /DATABASE_TIMEOUT/);
-  assert.match(readiness, /reply\.code\(readiness\.ok \? 200 : 503\)/);
 });
 
 test("NOVA writes a real runtime heartbeat without exposing secrets", async () => {
