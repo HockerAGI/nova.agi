@@ -69,22 +69,27 @@ async function writeHeartbeat(status: "online" | "degraded" | "offline") {
 export function startNovaRuntimeHeartbeat(logger: HeartbeatLogger): () => Promise<void> {
   state.running = true;
   let stopped = false;
-  let inFlight = false;
+  let activeBeat: Promise<void> | null = null;
 
-  const beat = async () => {
-    if (stopped || inFlight) return;
-    inFlight = true;
-    try {
-      const worker = getAgiWorkerLoopState();
-      const status = worker.enabled && worker.last_error ? "degraded" : "online";
-      await writeHeartbeat(status);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "NOVA_RUNTIME_HEARTBEAT_FAILED";
-      state.last_error = message;
-      logger.warn(`[NOVA RUNTIME] ${message}`);
-    } finally {
-      inFlight = false;
-    }
+  const beat = (): Promise<void> => {
+    if (stopped) return Promise.resolve();
+    if (activeBeat) return activeBeat;
+
+    activeBeat = (async () => {
+      try {
+        const worker = getAgiWorkerLoopState();
+        const status = worker.enabled && worker.last_error ? "degraded" : "online";
+        await writeHeartbeat(status);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "NOVA_RUNTIME_HEARTBEAT_FAILED";
+        state.last_error = message;
+        logger.warn(`[NOVA RUNTIME] ${message}`);
+      }
+    })().finally(() => {
+      activeBeat = null;
+    });
+
+    return activeBeat;
   };
 
   void beat();
@@ -96,6 +101,10 @@ export function startNovaRuntimeHeartbeat(logger: HeartbeatLogger): () => Promis
     stopped = true;
     state.running = false;
     clearInterval(timer);
+
+    const pendingBeat = activeBeat;
+    if (pendingBeat) await pendingBeat;
+
     try {
       await writeHeartbeat("offline");
     } catch (error) {
