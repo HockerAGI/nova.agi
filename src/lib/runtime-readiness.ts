@@ -10,15 +10,19 @@ async function checkSupabase(projectId: string) {
   const startedAt = Date.now();
 
   const query = async () => {
-    const { error } = await sbAdmin()
+    const { data, error } = await sbAdmin()
       .from("projects")
       .select("id")
       .eq("id", projectId)
-      .limit(1);
+      .maybeSingle();
 
-    return error
-      ? { ok: false, latency_ms: Date.now() - startedAt, error: "DATABASE_UNAVAILABLE" }
-      : { ok: true, latency_ms: Date.now() - startedAt, error: null };
+    if (error) {
+      return { ok: false, latency_ms: Date.now() - startedAt, error: "DATABASE_UNAVAILABLE" };
+    }
+    if (!data) {
+      return { ok: false, latency_ms: Date.now() - startedAt, error: "PROJECT_NOT_FOUND" };
+    }
+    return { ok: true, latency_ms: Date.now() - startedAt, error: null };
   };
 
   return Promise.race([
@@ -28,7 +32,7 @@ async function checkSupabase(projectId: string) {
         ok: false,
         latency_ms: Date.now() - startedAt,
         error: "DATABASE_TIMEOUT",
-      }), READINESS_TIMEOUT_MS).unref?.();
+      }), READINESS_TIMEOUT_MS);
     }),
   ]);
 }
@@ -39,10 +43,10 @@ export async function getNovaRuntimeReadiness() {
   const heartbeat = getNovaRuntimeHeartbeatState();
   const database = await checkSupabase(worker.project_id || "hocker-one");
   const configuredProviders = PROVIDERS.filter((provider) => providerReady(provider)).length;
-  const providerReadyForChat = configuredProviders > 0;
+  const providerConfiguredForChat = configuredProviders > 0;
   const workerReady =
     worker.enabled &&
-    Boolean(worker.last_tick_at) &&
+    Boolean(worker.last_successful_tick_at) &&
     !worker.last_error;
   const workerRequirementSatisfied = !config.readiness.requireWorker || workerReady;
   const heartbeatFresh = Boolean(
@@ -52,13 +56,13 @@ export async function getNovaRuntimeReadiness() {
 
   const reasons: string[] = [];
   if (!database.ok) reasons.push(database.error || "DATABASE_UNAVAILABLE");
-  if (!providerReadyForChat) reasons.push("NO_PROVIDER_CONFIGURED");
+  if (!providerConfiguredForChat) reasons.push("NO_PROVIDER_CONFIGURED");
   if (!workerRequirementSatisfied) {
     reasons.push(worker.enabled ? "AGI_WORKER_NOT_READY" : "AGI_WORKER_DISABLED");
   }
   if (heartbeat.last_error) reasons.push("HEARTBEAT_WRITE_FAILED");
 
-  const ok = database.ok && providerReadyForChat && workerRequirementSatisfied;
+  const ok = database.ok && providerConfiguredForChat && workerRequirementSatisfied;
 
   return {
     ok,
@@ -70,9 +74,10 @@ export async function getNovaRuntimeReadiness() {
         ok: database.ok,
         latency_ms: database.latency_ms,
       },
-      inference: {
-        ok: providerReadyForChat,
+      inference_configuration: {
+        ok: providerConfiguredForChat,
         configured_engines: configuredProviders,
+        connectivity_verified: false,
       },
       worker: {
         required: config.readiness.requireWorker,
@@ -81,6 +86,7 @@ export async function getNovaRuntimeReadiness() {
         running: worker.running,
         worker_id: worker.worker_id,
         last_tick_at: worker.last_tick_at,
+        last_successful_tick_at: worker.last_successful_tick_at,
         has_error: Boolean(worker.last_error),
       },
       heartbeat: {
