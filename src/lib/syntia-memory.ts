@@ -13,6 +13,25 @@ export type SyntiaMemory = {
   items: SyntiaMemoryItem[];
 };
 
+export type SyntiaMemoryPersistenceResult = {
+  persisted: boolean;
+  id: string | null;
+  error: string | null;
+};
+
+type SyntiaMemoryPersistenceClient = {
+  from(table: string): {
+    insert(values: Record<string, unknown>): {
+      select(columns: string): {
+        single(): PromiseLike<{
+          data: { id?: unknown } | null;
+          error: { message?: string } | null;
+        }>;
+      };
+    };
+  };
+};
+
 function compact(value: string, max = 420): string {
   const clean = String(value || "").replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
@@ -86,7 +105,7 @@ export function syntiaMemoryPromptBlock(memory: SyntiaMemory): string {
     ].join("\n");
   }
 
-  const lines = memory.items.slice(-12).map((item) => {
+  const lines = memory.items.slice(0, 12).map((item) => {
     return `- ${item.type}: ${compact(item.message)}`;
   });
 
@@ -97,8 +116,8 @@ export function syntiaMemoryPromptBlock(memory: SyntiaMemory): string {
   ].join("\n");
 }
 
-export async function recordSyntiaInteraction(
-  sb: AdminSupabase,
+export async function recordSyntiaInteractionWithClient(
+  sb: SyntiaMemoryPersistenceClient,
   args: {
     project_id: string;
     trace_id: string;
@@ -108,27 +127,62 @@ export async function recordSyntiaInteraction(
     user_message: string;
     reply: string;
   },
-): Promise<void> {
+): Promise<SyntiaMemoryPersistenceResult> {
   const message = `NOVA atendió una interacción. Perfil especializado asignado: ${args.agi_id}. Usuario: ${compact(
     args.user_message,
     180,
   )}`;
 
-  await sb.from("events").insert({
-    project_id: args.project_id,
-    node_id: null,
-    level: "info",
-    type: "memory.interaction",
-    message,
-    data: {
-      trace_id: args.trace_id,
-      thread_id: args.thread_id,
-      intent: args.intent,
-      agi_id: args.agi_id,
-      cooperation_verified: false,
-      user_preview: compact(args.user_message, 240),
-      reply_preview: compact(args.reply, 300),
-      source: "syntia-memory",
-    },
-  });
+  try {
+    const { data, error } = await sb
+      .from("events")
+      .insert({
+        project_id: args.project_id,
+        node_id: null,
+        level: "info",
+        type: "memory.interaction",
+        message,
+        data: {
+          trace_id: args.trace_id,
+          thread_id: args.thread_id,
+          intent: args.intent,
+          agi_id: args.agi_id,
+          cooperation_verified: false,
+          user_preview: compact(args.user_message, 240),
+          reply_preview: compact(args.reply, 300),
+          source: "syntia-memory",
+        },
+      })
+      .select("id")
+      .single();
+
+    const id = String(data?.id ?? "").trim();
+    if (error || !id) {
+      return {
+        persisted: false,
+        id: null,
+        error: String(error?.message ?? "SYNTIA_MEMORY_ID_MISSING").slice(0, 500),
+      };
+    }
+
+    return { persisted: true, id, error: null };
+  } catch (error) {
+    return {
+      persisted: false,
+      id: null,
+      error: String(
+        error instanceof Error ? error.message : "SYNTIA_MEMORY_PERSISTENCE_FAILED",
+      ).slice(0, 500),
+    };
+  }
+}
+
+export async function recordSyntiaInteraction(
+  sb: AdminSupabase,
+  args: Parameters<typeof recordSyntiaInteractionWithClient>[1],
+): Promise<SyntiaMemoryPersistenceResult> {
+  return recordSyntiaInteractionWithClient(
+    sb as unknown as SyntiaMemoryPersistenceClient,
+    args,
+  );
 }

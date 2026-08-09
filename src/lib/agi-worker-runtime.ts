@@ -2,7 +2,7 @@ import type { JsonObject, JsonValue, Provider, CompletionMode, ChatMessage } fro
 import { AGIS } from "./agis.js";
 import { config, modelFor, providerReady } from "../config.js";
 import { providersWithinBudget } from "./provider-budget.js";
-import { recordUsage } from "./usage.js";
+import { recordUsage, requirePersistedUsage } from "./usage.js";
 import { openaiRespond } from "../providers/openai.js";
 import { geminiRespond } from "../providers/gemini.js";
 import { anthropicRespond } from "../providers/anthropic.js";
@@ -276,6 +276,7 @@ function buildEvidence(params: {
   completion: WorkerCompletion & { failures: Array<{ provider: Provider; reason: string }> };
   inputHash: string;
   resultHash: string;
+  usageEvidence: JsonObject;
 }): JsonValue[] {
   return [
     {
@@ -301,6 +302,7 @@ function buildEvidence(params: {
       algorithm: "sha256",
       value: params.resultHash,
     },
+    params.usageEvidence,
   ] as JsonValue[];
 }
 
@@ -361,6 +363,28 @@ export async function runOneAgiTask(params: {
     }
 
     const resultHash = hashAgiArtifact(core);
+    const usageResult = await recordUsage({
+      project_id: task.project_id,
+      thread_id: null,
+      provider: completion.provider,
+      model: completion.model,
+      tokens_in: completion.usage?.tokens_in,
+      tokens_out: completion.usage?.tokens_out,
+      trace_id: task.trace_id ?? run.id,
+      meta: {
+        agi_worker: true,
+        task_id: task.id,
+        run_id: run.id,
+        agi_id: agi.id,
+        result_hash: resultHash,
+      },
+    });
+    const usageEvidence = requirePersistedUsage(usageResult, {
+      provider: completion.provider,
+      model: completion.model,
+      tokens_in: completion.usage?.tokens_in,
+      tokens_out: completion.usage?.tokens_out,
+    });
     const evidence = buildEvidence({
       task,
       runId: run.id,
@@ -368,6 +392,7 @@ export async function runOneAgiTask(params: {
       completion,
       inputHash,
       resultHash,
+      usageEvidence,
     });
     const output: JsonObject = {
       ...core,
@@ -396,23 +421,6 @@ export async function runOneAgiTask(params: {
       evidence,
       result_hash: resultHash,
     });
-
-    await recordUsage({
-      project_id: task.project_id,
-      thread_id: null,
-      provider: completion.provider,
-      model: completion.model,
-      tokens_in: completion.usage?.tokens_in,
-      tokens_out: completion.usage?.tokens_out,
-      trace_id: task.trace_id ?? run.id,
-      meta: {
-        agi_worker: true,
-        task_id: task.id,
-        run_id: run.id,
-        agi_id: agi.id,
-        result_hash: resultHash,
-      },
-    }).catch(() => undefined);
 
     return {
       processed: true,
