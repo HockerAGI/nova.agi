@@ -1060,7 +1060,10 @@ export function buildNovaApp() {
   });
 
   app.addHook("preHandler", async (req, reply) => {
-    if (req.method === "GET" && req.url.startsWith("/health")) return;
+    const requestPath = req.url.split("?")[0] || "";
+    if (req.method === "GET" && (requestPath === "/health" || requestPath === "/api/health")) {
+      return;
+    }
 
     if (config.orchestratorKey) {
       const auth = req.headers.authorization;
