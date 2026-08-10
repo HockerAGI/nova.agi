@@ -1,0 +1,6 @@
+* @HockerAGI
+/.github/ @HockerAGI
+/src/ @HockerAGI
+/tests/ @HockerAGI
+/package.json @HockerAGI
+/package-lock.json @HockerAGI

@@ -114,12 +114,14 @@ export async function loadThreadMessages(
     .select("*")
     .eq("thread_id", thread_id)
     .eq("project_id", project_id)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(limit);
 
   if (error) {
     throw new Error(error.message);
   }
 
-  return (data ?? []).map((row) => normalizeMessage(row as Record<string, unknown>));
+  return (data ?? [])
+    .map((row) => normalizeMessage(row as Record<string, unknown>))
+    .reverse();
 }

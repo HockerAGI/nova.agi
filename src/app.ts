@@ -704,7 +704,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
   const history = await loadThreadMessages(supabaseAdmin, thread.id, project_id, 20);
   const syntiaMemory = await loadSyntiaMemory(supabaseAdmin, project_id);
 
-  await appendMessage(supabaseAdmin, thread.id, project_id, "user", message, {
+  const userMemoryMessage = await appendMessage(supabaseAdmin, thread.id, project_id, "user", message, {
     trace_id,
     intent: intentDecision.intent,
     agi_id: agi.id,
@@ -880,7 +880,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
     }));
   }
 
-  await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", finalReply, {
+  const assistantMemoryMessage = await appendMessage(supabaseAdmin, thread.id, project_id, "assistant", finalReply, {
     trace_id,
     provider: completion.provider,
     model: completion.model,
@@ -896,7 +896,7 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
     mcp_deferred_actions: deferredMcpActions.length,
   });
 
-  await recordSyntiaInteraction(supabaseAdmin, {
+  const syntiaMemoryPersistence = await recordSyntiaInteraction(supabaseAdmin, {
     project_id,
     trace_id,
     thread_id: thread.id,
@@ -904,9 +904,9 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
     agi_id: agi.id,
     user_message: message,
     reply: finalReply,
-  }).catch(() => undefined);
+  });
 
-  await recordUsage({
+  const usagePersistence = await recordUsage({
     project_id,
     thread_id: thread.id,
     provider: completion.provider,
@@ -939,6 +939,17 @@ const registryDecision = await pickAgiFromRegistry(supabaseAdmin, intentDecision
       agi_registry: registryDecision.source,
       syntia_memory: syntiaMemory.source,
       syntia_memory_items: syntiaMemory.items.length,
+      evidence: {
+        user_message_id: userMemoryMessage.id,
+        assistant_message_id: assistantMemoryMessage.id,
+        syntia_memory_persisted: syntiaMemoryPersistence.persisted,
+        syntia_memory_event_id: syntiaMemoryPersistence.id,
+        usage_persisted: usagePersistence.persisted,
+        usage_id: usagePersistence.id,
+        provider: completion.provider,
+        model: completion.model,
+        trace_id,
+      },
       mcp: {
         tools_available: nativeToolDefs.length,
         tool_calls_parsed: totalParsed,
@@ -1049,7 +1060,10 @@ export function buildNovaApp() {
   });
 
   app.addHook("preHandler", async (req, reply) => {
-    if (req.method === "GET" && req.url.startsWith("/health")) return;
+    const requestPath = req.url.split("?")[0] || "";
+    if (req.method === "GET" && (requestPath === "/health" || requestPath === "/api/health")) {
+      return;
+    }
 
     if (config.orchestratorKey) {
       const auth = req.headers.authorization;

@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --import tsx --test tests/*.test.mjs",
     "seed:agis": "tsx src/scripts/seedAgis.ts"
   },
   "dependencies": {
@@ -29,7 +29,8 @@
   },
   "overrides": {
     "axios": "1.18.1",
-    "fast-uri": "3.1.4",
+    "esbuild": "0.28.1",
+    "fast-uri": "3.1.5",
     "find-my-way": "9.7.0",
     "form-data": "4.0.6",
     "ws": "8.21.1"
