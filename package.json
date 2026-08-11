@@ -13,7 +13,7 @@
     "seed:agis": "tsx src/scripts/seedAgis.ts"
   },
   "dependencies": {
-    "@fastify/cors": "^11.2.0",
+    "@fastify/cors": "^11.3.0",
     "@supabase/supabase-js": "^2.49.1",
     "dotenv": "^16.4.5",
     "fastify": "^5.8.5",
