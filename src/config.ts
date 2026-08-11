@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const strictBoolean = z.preprocess((value) => {
   if (typeof value === "boolean") return value;
