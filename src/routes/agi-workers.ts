@@ -21,7 +21,7 @@ const CreateTaskSchema = z.object({
   intent: IntentSchema.default("general"),
   subject: z.string().min(1).max(240),
   body: z.string().min(1).max(20_000),
-  context: z.record(z.unknown()).default({}),
+  context: z.record(z.string(), z.unknown()).default({}),
   thread_id: z.string().uuid().nullable().optional(),
   trace_id: z.string().max(240).optional(),
   priority: PrioritySchema.default("normal"),
