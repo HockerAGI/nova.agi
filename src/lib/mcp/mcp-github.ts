@@ -30,6 +30,9 @@ const DEFAULT_REPOSITORIES = [
   "HockerAGI/hocker-node-agent",
   "HockerAGI/chido.casino",
   "HockerAGI/hocker.agi",
+  "HockerAGI/hocker.ads",
+  "HockerAGI/chido.lab",
+  "HockerAGI/chido.games",
 ] as const;
 
 const GITHUB_TOOLS: McpToolSchema[] = [
