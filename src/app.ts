@@ -62,7 +62,7 @@ const ChatSchema = z
     prefer: z.enum(["auto", "openai", "gemini", "anthropic", "ollama", "base44"]).default("auto"),
     mode: z.enum(["auto", "fast", "pro"]).default("auto"),
     allow_actions: z.boolean().default(false),
-    context_data: z.record(z.unknown()).nullable().optional(),
+    context_data: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .superRefine((value, ctx) => {
     if (!value.message && !value.text) {
