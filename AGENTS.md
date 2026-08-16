@@ -8,9 +8,10 @@ En este orden:
 
 1. `README.md` — contrato funcional actual.
 2. `SECURITY.md` — límites de seguridad y secretos.
-3. `DEPLOYMENT.md`, `Dockerfile` y `railway.json` — contrato de despliegue; no equivalen por sí solos a un deployment vivo.
-4. código/tests/migraciones actuales.
-5. Context Bridge y evidence packs de Hocker One cuando la tarea afecte al ecosistema global.
+3. `docs/CONTINUITY.md` — recuperación, handoff y evidencia mínima de runtime.
+4. `DEPLOYMENT.md`, `Dockerfile` y `railway.json` — contrato de despliegue; no equivalen por sí solos a un deployment vivo.
+5. código/tests/migraciones actuales.
+6. Context Bridge y evidence packs de Hocker One cuando la tarea afecte al ecosistema global.
 
 La jerarquía HOCKER es: producción/configuración verificable > `main`/migraciones > contratos/tests > evidencia aprobada > canon > historia.
 
@@ -25,7 +26,7 @@ NOVA.AGI:
 - prepara respuestas/propuestas;
 - **no ejecuta acciones productivas desde el chat**.
 
-Hocker One conserva Owner Gate, `agi_action_queue`, aprobación, ejecución material, evidencia y recuperación.
+Hocker One conserva Owner Gate, `agi_action_queue`, aprobación, ejecución material, evidencia y recuperación global.
 
 ## 3. No negociables
 
@@ -38,15 +39,26 @@ Hocker One conserva Owner Gate, `agi_action_queue`, aprobación, ejecución mate
 - Datos de PUNTO·G, Chido, Wallet, NEXPA, Trackhok u otros dominios sensibles permanecen aislados salvo hechos explícitamente autorizados/agregados.
 - No copiar providers/tools desde Hocker One sin contrato de compatibilidad. Si existen dos registries, documentar owner de verdad, adapter y plan de convergencia.
 
-## 4. Contexto compartido
+## 4. Contexto compartido y continuidad
 
 El sistema compartido no es un archivo gigante ni un volcado de chats:
 
-- **Context Bridge** en `HockerAGI/hocker.one` registra checkpoints/manifiestos de ChatGPT, Codex, GitHub, Google Drive, Supabase y Vercel.
+- **Context Bridge** en `HockerAGI/hocker.one` es el ledger operacional compartido para checkpoints, manifests y cobertura.
 - **SYNTIA / Memory Mirror** conserva aprendizaje reutilizable revisado y con aislamiento por dominio.
-- `AGENTS.md` aporta reglas del repo a Codex; no debe contener estado dinámico que envejezca.
+- `AGENTS.md` aporta reglas durables del repo a Codex; no debe contener estado dinámico que envejezca.
+- `docs/CONTINUITY.md` define el handoff local de NOVA: SHA, PR, target de deployment, health/readiness, routing, herramientas, memoria, eval evidence, blockers y siguiente acción.
 
-Si una tarea depende del estado global, consulta el Context Bridge/evidence pack actual; no copies un snapshot antiguo a este repo.
+### Al iniciar una sesión
+
+1. lee `AGENTS.md` y `docs/CONTINUITY.md`;
+2. confirma el SHA actual de la rama y `main`;
+3. revisa PRs abiertos;
+4. revalida cualquier dato mutable de deployment/runtime;
+5. consulta Context Bridge/Hocker One si la tarea depende del estado global.
+
+### Al cerrar un hito
+
+Después de cambios materiales de runtime, provider routing, tools, memory, deployment, health/readiness, eval evidence, blockers o fase, publica un checkpoint normalizado hacia Context Bridge cuando exista identidad autorizada. Si no puede publicarse, deja el handoff explícito en la rama y marca la evidencia pendiente. Nunca guardes el chat crudo.
 
 ## 5. Desarrollo
 
@@ -62,13 +74,16 @@ npm run build
 
 Antes de cambiar routing/modelos/memoria/tools:
 
-1. define el comportamiento esperado y riesgo;
+1. define comportamiento esperado y riesgo;
 2. escribe/ajusta test;
 3. implementa el cambio mínimo;
 4. ejecuta tests + typecheck + build;
 5. verifica auth, timeouts, fallback y sanitización;
 6. para cambios de proveedor/modelo, exige regression eval y rollback;
-7. para cambios de datos, usa migración compatible y valida RLS/grants en el proyecto autorizado.
+7. para cambios de datos, usa migración compatible y valida RLS/grants en el proyecto autorizado;
+8. actualiza el handoff/checkpoint de continuidad al finalizar un hito.
+
+Los cambios exclusivamente Markdown no deben consumir un CI completo. Cualquier cambio de código, tests, workflow, config, manifest, lockfile, Docker/Railway o migración sí mantiene CI obligatorio.
 
 ## 6. API y seguridad
 
@@ -86,8 +101,20 @@ Antes de cambiar routing/modelos/memoria/tools:
 - No convertir raw chats en memoria reutilizable automáticamente.
 - Mantener procedencia, tenant/project scope, sensibilidad, retención y capacidad de rollback/versionado.
 
-## 8. Release
+## 8. Runtime live y release
 
-No declarar NOVA “live/100%” sólo porque el repo compila. Para estado live se requiere, como mínimo, deployment identificado, health reproducible, auth E2E desde Hocker One, routing/fallback probado, persistencia/telemetría observable, evals vigentes, budget/cost visibility, runbook y rollback.
+NOVA ya expone `/health/ready` y `railway.json` lo usa como healthcheck. Esto demuestra contrato ejecutable, no un deployment vivo.
+
+Para considerar un runtime dedicado verificado se requiere al menos:
+
+- deployment identificado y asociado a un commit exacto;
+- respuesta reproducible de `/health/ready` sobre ese deployment;
+- logs/runtime heartbeat observables;
+- auth E2E desde Hocker One;
+- routing/fallback probado;
+- persistencia/telemetría observable;
+- evals vigentes;
+- budget/cost visibility;
+- runbook y rollback.
 
 No fusionar cambios materiales mientras los gates aplicables no estén verdes.
