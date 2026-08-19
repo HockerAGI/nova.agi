@@ -39,6 +39,17 @@ Hocker One conserva Owner Gate, `agi_action_queue`, aprobación, ejecución mate
 - Datos de PUNTO·G, Chido, Wallet, NEXPA, Trackhok u otros dominios sensibles permanecen aislados salvo hechos explícitamente autorizados/agregados.
 - No copiar providers/tools desde Hocker One sin contrato de compatibilidad. Si existen dos registries, documentar owner de verdad, adapter y plan de convergencia.
 
+### Regla de saneamiento HOCKER
+
+Todo elemento existente —código, documentación, UI, workflow, integración, dependencia, configuración o infraestructura— pasa por cuatro filtros antes de conservarse:
+
+1. **Aporta y sigue vigente → conservar.**
+2. **Aporta pero quedó viejo → reconstruir/adaptar.**
+3. **Se solapa → fusionar.**
+4. **No ayuda a comprender, operar, recuperar o auditar → eliminar/descartar.**
+
+No conservar deuda sólo porque ya existe ni borrar piezas sólo porque un advisor, bot o métrica las marque como antiguas. Para dependencias mayores, cambios de runtime, permisos, índices, migraciones o contratos externos, exigir compatibilidad y evidencia antes de integrar o eliminar.
+
 ## 4. Contexto compartido y continuidad
 
 El sistema compartido no es un archivo gigante ni un volcado de chats:
