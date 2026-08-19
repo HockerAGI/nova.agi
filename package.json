@@ -24,7 +24,7 @@
   "devDependencies": {
     "@types/node": "^22.13.1",
     "@types/pdfkit": "0.17.6",
-    "tsx": "^4.16.2",
+    "tsx": "^4.23.12",
     "typescript": "^5.9.0"
   },
   "overrides": {
