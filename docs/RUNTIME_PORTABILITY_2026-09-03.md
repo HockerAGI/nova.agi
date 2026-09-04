@@ -88,3 +88,11 @@ A dedicated runtime is eligible for activation only after all of the following a
 10. rollback to a known-good image/revision is demonstrated.
 
 Until these are complete, dedicated nova.agi remains fallback candidate / unverified, not production authority.
+
+## Evidence cut 2026-09-04
+
+- NOVA main actual: 7b9e0f0158fcb7c611fc3d4bac33959bbd838d8d after #44.
+- #44 includes the OCI deployment kit and the patched fast-uri dependency graph.
+- CI #176 for the merged candidate completed successfully: 44/44 tests PASS, typecheck PASS, build PASS, production dependency audit PASS and full dependency audit PASS.
+- The dedicated runtime remains fallback/unverified until a real OCI deployment produces health/readiness/heartbeat/worker/MCP/E2E/rollback evidence.
+- Railway remains non-authoritative.
