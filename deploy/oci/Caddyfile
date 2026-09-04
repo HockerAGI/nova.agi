@@ -1,0 +1,14 @@
+{
+  email {$NOVA_TLS_EMAIL}
+}
+
+{$NOVA_DOMAIN} {
+  encode gzip zstd
+  reverse_proxy nova:8080
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    X-Frame-Options "DENY"
+  }
+}
