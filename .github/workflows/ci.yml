@@ -47,7 +47,7 @@ jobs:
       - name: Verify dependency remediation
         run: |
           ! grep -q '"node_modules/jpeg-exif"' package-lock.json
-          node -e "const lock=require('./package-lock.json'); if(lock.packages['node_modules/pdfkit']?.version !== '0.19.1') process.exit(1)"
+          node -e "const lock=require('./package-lock.json'); if(lock.packages['node_modules/pdfkit']?.version !== '0.20.2') process.exit(1)"
 
       - name: Regression tests
         run: npm test
