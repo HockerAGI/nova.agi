@@ -33,6 +33,7 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   BASE44_API_KEY: z.string().optional(),
   OLLAMA_ENABLED: strictBoolean.default(false),
+  NOVA_LOCAL_ONLY_MODE: strictBoolean.default(false),
   OLLAMA_BASE_URL: z.string().default("http://127.0.0.1:11434"),
 
   BUDGETS_ENABLED: strictBoolean.default(true),
@@ -135,6 +136,7 @@ export const config = {
     enabled: env.OLLAMA_ENABLED,
     baseUrl: env.OLLAMA_BASE_URL,
   },
+  localOnlyMode: env.NOVA_LOCAL_ONLY_MODE,
 
   budgetsEnabled: env.BUDGETS_ENABLED,
   budgetOpenAI: env.BUDGET_OPENAI,
@@ -219,6 +221,7 @@ export const config = {
 };
 
 export function providerReady(provider: "openai" | "gemini" | "anthropic" | "ollama" | "base44"): boolean {
+  if (config.localOnlyMode && provider !== "ollama") return false;
   if (provider === "ollama") return Boolean(config.ollama.enabled);
   if (provider === "openai") return Boolean(config.openai.apiKey);
   if (provider === "gemini") return Boolean(config.gemini.apiKey);

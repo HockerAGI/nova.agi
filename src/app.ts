@@ -581,6 +581,11 @@ async function completeWithFallback(args: {
     }
   }
 
+  if (config.localOnlyMode) {
+    // Never misrepresent a canned survival reply as local LLM inference.
+    throw new Error("NOVA_LOCAL_MODEL_UNAVAILABLE");
+  }
+
   if (config.survival.enabled) {
     return buildSurvivalCompletion({
       providers: args.providers,
