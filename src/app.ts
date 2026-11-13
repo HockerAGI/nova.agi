@@ -504,6 +504,10 @@ async function completeProvider(
 ) {
   const timeoutMs = mode === "pro" ? 60_000 : 35_000;
 
+  if (config.localOnlyMode && provider !== "ollama") {
+    throw new Error("NOVA_LOCAL_ONLY_CLOUD_PROVIDER_BLOCKED");
+  }
+
   if (provider === "openai") {
     return openaiRespond({
       apiKey: config.openai.apiKey,
@@ -579,6 +583,11 @@ async function completeWithFallback(args: {
         reason: sanitizeProviderError(error),
       });
     }
+  }
+
+  if (config.localOnlyMode) {
+    // Never misrepresent a canned survival reply as local LLM inference.
+    throw new Error("NOVA_LOCAL_MODEL_UNAVAILABLE");
   }
 
   if (config.survival.enabled) {

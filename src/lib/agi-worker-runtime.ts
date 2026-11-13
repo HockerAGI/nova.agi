@@ -193,6 +193,9 @@ async function completeProvider(
   mode: CompletionMode,
 ): Promise<WorkerCompletion> {
   const timeoutMs = mode === "pro" ? 60_000 : 40_000;
+  if (config.localOnlyMode && provider !== "ollama") {
+    throw new Error("NOVA_LOCAL_ONLY_CLOUD_PROVIDER_BLOCKED");
+  }
   const model = modelFor(provider, mode);
 
   if (provider === "openai") {

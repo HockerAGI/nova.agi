@@ -1,4 +1,4 @@
-import { config, providerReady } from "../config.js";
+import { config, modelFor, providerReady } from "../config.js";
 import { getAgiWorkerLoopState } from "./agi-worker-loop.js";
 import { getNovaRuntimeHeartbeatState } from "./runtime-heartbeat.js";
 import { sbAdmin } from "./supabase.js";
@@ -37,6 +37,34 @@ async function checkSupabase(projectId: string) {
   ]);
 }
 
+
+async function checkLocalModel(): Promise<boolean> {
+  // A configured URL is not evidence that a model is actually installed.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), READINESS_TIMEOUT_MS);
+  try {
+    const baseUrl = config.ollama.baseUrl.endsWith("/") ? config.ollama.baseUrl.slice(0, -1) : config.ollama.baseUrl;
+    const res = await fetch(`${baseUrl}/api/tags`, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const data: unknown = await res.json().catch(() => null);
+    if (!data || typeof data !== "object") return false;
+    const models = (data as { models?: unknown }).models;
+    const expected = modelFor("ollama", "auto");
+    return Array.isArray(models) && models.some((item: unknown) =>
+      Boolean(item && typeof item === "object" && (item as { name?: unknown }).name === expected)
+    );
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getNovaRuntimeReadiness() {
   const checkedAt = new Date().toISOString();
   const worker = getAgiWorkerLoopState();
@@ -44,6 +72,8 @@ export async function getNovaRuntimeReadiness() {
   const database = await checkSupabase(worker.project_id || "hocker-one");
   const configuredProviders = PROVIDERS.filter((provider) => providerReady(provider)).length;
   const providerConfiguredForChat = configuredProviders > 0;
+  const localModelOnline = config.localOnlyMode ? await checkLocalModel() : false;
+  const inferenceReady = providerConfiguredForChat && (!config.localOnlyMode || localModelOnline);
   const workerReady =
     worker.enabled &&
     Boolean(worker.last_successful_tick_at) &&
@@ -57,12 +87,15 @@ export async function getNovaRuntimeReadiness() {
   const reasons: string[] = [];
   if (!database.ok) reasons.push(database.error || "DATABASE_UNAVAILABLE");
   if (!providerConfiguredForChat) reasons.push("NO_PROVIDER_CONFIGURED");
+  if (config.localOnlyMode && !localModelOnline) reasons.push("LOCAL_MODEL_UNAVAILABLE");
   if (!workerRequirementSatisfied) {
     reasons.push(worker.enabled ? "AGI_WORKER_NOT_READY" : "AGI_WORKER_DISABLED");
   }
+  const heartbeatReady = heartbeat.running && heartbeatFresh && !heartbeat.last_error;
+  if (!heartbeat.running || !heartbeatFresh) reasons.push("HEARTBEAT_NOT_FRESH");
   if (heartbeat.last_error) reasons.push("HEARTBEAT_WRITE_FAILED");
 
-  const ok = database.ok && providerConfiguredForChat && workerRequirementSatisfied;
+  const ok = database.ok && inferenceReady && workerRequirementSatisfied && heartbeatReady;
 
   return {
     ok,
@@ -75,9 +108,10 @@ export async function getNovaRuntimeReadiness() {
         latency_ms: database.latency_ms,
       },
       inference_configuration: {
-        ok: providerConfiguredForChat,
+        ok: inferenceReady,
         configured_engines: configuredProviders,
-        connectivity_verified: false,
+        connectivity_verified: config.localOnlyMode && localModelOnline,
+        local_only_mode: config.localOnlyMode,
       },
       worker: {
         required: config.readiness.requireWorker,
@@ -90,7 +124,7 @@ export async function getNovaRuntimeReadiness() {
         has_error: Boolean(worker.last_error),
       },
       heartbeat: {
-        ok: heartbeatFresh && !heartbeat.last_error,
+        ok: heartbeatReady,
         running: heartbeat.running,
         node_id: heartbeat.node_id,
         last_success_at: heartbeat.last_success_at,
