@@ -52,7 +52,23 @@ test("readiness is fail-closed for missing model and stale heartbeat", async () 
 test("every completion dispatch rejects cloud inference in local-only mode", async () => {
   const app = await load("src/app.ts");
   const worker = await load("src/lib/agi-worker-runtime.ts");
-  for (const code of [app, worker]) {
+  const decide = await load("src/lib/decide.ts");
+  for (const code of [app, worker, decide]) {
     assert.match(code, /if \(config\.localOnlyMode && provider !== "ollama"\) \{\s*throw new Error\("NOVA_LOCAL_ONLY_CLOUD_PROVIDER_BLOCKED"\)/);
   }
+});
+
+test("local-only intent classification remains deterministic without cloud inference", () => {
+  const script = `import { decideIntent } from './src/lib/decide.ts';
+    console.log(JSON.stringify(await decideIntent('deploy docker de forma segura','openai')));`;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+    cwd: new URL("../", import.meta.url), encoding: "utf8", timeout: 3500,
+    env: { ...process.env, NODE_ENV: "development", SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "ci-test-not-a-real-service-role-key",
+      OPENAI_API_KEY: "ci-openai-not-real", GEMINI_API_KEY: "ci-gemini-not-real",
+      ANTHROPIC_API_KEY: "ci-anthropic-not-real", NOVA_LOCAL_ONLY_MODE: "true",
+      OLLAMA_ENABLED: "false" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout.trim()).intent, "ops");
 });

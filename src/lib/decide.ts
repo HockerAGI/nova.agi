@@ -1,4 +1,4 @@
-import { config, modelFor } from "../config.js";
+import { config, modelFor, providerReady } from "../config.js";
 import { openaiRespond } from "../providers/openai.js";
 import { geminiRespond } from "../providers/gemini.js";
 import { anthropicRespond } from "../providers/anthropic.js";
@@ -28,19 +28,11 @@ Responde SOLO con JSON válido:
 {"intent":"general|ops|code|finance|social|research","reason":"explicación breve"}
 `.trim();
 
-function providerAvailable(provider: Provider): boolean {
-  if (provider === "ollama") return Boolean(config.ollama.enabled);
-  if (provider === "openai") return Boolean(config.openai.apiKey);
-  if (provider === "gemini") return Boolean(config.gemini.apiKey);
-  if (provider === "base44") return Boolean(config.base44.apiKey);
-  return Boolean(config.anthropic.apiKey);
-}
-
 function candidateProviders(prefer: Prefer = "auto"): Provider[] {
   const ordered: Provider[] = [];
 
   const push = (provider: Provider) => {
-    if (providerAvailable(provider) && !ordered.includes(provider)) {
+    if (providerReady(provider) && !ordered.includes(provider)) {
       ordered.push(provider);
     }
   };
@@ -131,6 +123,9 @@ function extractDecision(text: string): Decision | null {
 }
 
 async function completeWith(provider: Provider, messages: ChatMessage[]): Promise<string> {
+  if (config.localOnlyMode && provider !== "ollama") {
+    throw new Error("NOVA_LOCAL_ONLY_CLOUD_PROVIDER_BLOCKED");
+  }
   const timeoutMs = 12_000;
 
   if (provider === "openai") {
