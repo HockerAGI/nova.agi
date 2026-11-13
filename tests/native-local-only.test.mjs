@@ -48,3 +48,11 @@ test("readiness is fail-closed for missing model and stale heartbeat", async () 
   assert.match(code, /database\.ok && inferenceReady && workerRequirementSatisfied && heartbeatReady/);
   assert.match(app, /if \(config\.localOnlyMode\) \{[^}]*throw new Error\("NOVA_LOCAL_MODEL_UNAVAILABLE"\)/);
 });
+
+test("every completion dispatch rejects cloud inference in local-only mode", async () => {
+  const app = await load("src/app.ts");
+  const worker = await load("src/lib/agi-worker-runtime.ts");
+  for (const code of [app, worker]) {
+    assert.match(code, /if \(config\.localOnlyMode && provider !== "ollama"\) \{\s*throw new Error\("NOVA_LOCAL_ONLY_CLOUD_PROVIDER_BLOCKED"\)/);
+  }
+});
