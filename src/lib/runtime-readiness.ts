@@ -43,7 +43,8 @@ async function checkLocalModel(): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), READINESS_TIMEOUT_MS);
   try {
-    const res = await fetch(`${config.ollama.baseUrl.replace(/\\/$/, "")}/api/tags`, {
+    const baseUrl = config.ollama.baseUrl.endsWith("/") ? config.ollama.baseUrl.slice(0, -1) : config.ollama.baseUrl;
+    const res = await fetch(`${baseUrl}/api/tags`, {
       method: "GET",
       signal: controller.signal,
       headers: { accept: "application/json" },
