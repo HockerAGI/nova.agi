@@ -75,6 +75,32 @@ test("automatic worker loop is controlled, non-overlapping and fail-closed", asy
   assert.match(loop, /timer\.unref/);
 });
 
+test("stale task backlog blocks every worker claim before any RPC or recovery mutation", async () => {
+  const queue = await read("src/lib/agi-work-queue.ts");
+  const loop = await read("src/lib/agi-worker-loop.ts");
+
+  assert.match(queue, /MAX_UNREVIEWED_AGI_TASK_AGE_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(queue, /\.select\("id", \{ head: true, count: "exact" \}\)/);
+  assert.match(queue, /\.eq\("project_id", projectId\)/);
+  assert.match(queue, /\.in\("status", \["queued", "pending"\]\)/);
+  assert.match(queue, /\.lt\("created_at", cutoff\)/);
+  assert.match(queue, /AGI_WORKER_BACKLOG_PREFLIGHT_UNAVAILABLE/);
+
+  const claim = queue.slice(queue.indexOf("export async function claimNextAgiTask("));
+  const check = claim.indexOf("countUnreviewedStaleAgiTasks(params.project_id)");
+  const lock = claim.indexOf('.rpc("claim_next_agi_task"');
+  assert.ok(check >= 0 && lock > check, "the backlog must be checked before task locking");
+  assert.match(claim, /AGI_WORKER_STALE_BACKLOG_REQUIRES_REVIEW/);
+
+  const tick = loop.slice(loop.indexOf("const tick = async () =>"));
+  const tickPreflight = tick.indexOf("countUnreviewedStaleAgiTasks(state.project_id)");
+  const recovery = tick.indexOf("await recoverStaleAgiTasks(");
+  const execute = tick.indexOf("await runOneAgiTaskAndRespond(");
+  assert.ok(tickPreflight >= 0 && recovery > tickPreflight && execute > recovery,
+    "the scheduled worker must validate before any recovery/claim");
+  assert.doesNotMatch(tick.slice(0, recovery), /last_successful_tick_at = new Date\(\)/);
+});
+
 test("provider exhaustion fails honestly and local providers remain eligible", async () => {
   const runtime = await read("src/lib/agi-worker-runtime.ts");
 
