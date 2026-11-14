@@ -15,3 +15,25 @@ export function hasFreshSuccessfulWorkerTick(
   const allowedAgeMs = Math.max(30_000, Math.min(intervalMs * 3, 15 * 60_000));
   return now - timestamp <= allowedAgeMs;
 }
+
+/**
+ * Provider fallback can legitimately run several 40–60 second attempts.
+ * Keep readiness true for a bounded in-flight task ONLY if this process
+ * already completed at least one successful worker tick.
+ * No timestamp from the database or a prior process is used here.
+ */
+export function hasBoundedInFlightWorkerTick(
+  running: boolean,
+  startedAt: string | null,
+  previousSuccessAt: string | null,
+  now = Date.now(),
+): boolean {
+  if (!running || !startedAt || !previousSuccessAt) return false;
+  const started = Date.parse(startedAt);
+  const previous = Date.parse(previousSuccessAt);
+  const maxRunMs = 7 * 60_000;
+  if (!Number.isFinite(started) || !Number.isFinite(previous) ||
+      started > now || previous > started || now - previous > maxRunMs ||
+      now - started > maxRunMs) return false;
+  return true;
+}
