@@ -29,6 +29,7 @@ services:
         condition: service_healthy
     environment:
       NOVA_DOMAIN: ${NOVA_DOMAIN:?set NOVA_DOMAIN in /etc/nova/caddy.env}
+      NOVA_TLS_EMAIL: ${NOVA_TLS_EMAIL:?set NOVA_TLS_EMAIL in /etc/nova/caddy.env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
