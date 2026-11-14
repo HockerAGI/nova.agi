@@ -57,8 +57,9 @@ provider billing controls before setting `NOVA_AGI_WORKER_ENABLED=true`.
 Once explicit release gates permit activation, record:
 - Exact Git SHA and resulting container image digest (no `latest` only).
 - TLS DNS ownership and `/health` HTTP 200.
-- `/health/ready` HTTP 200 with `worker.tick_fresh=true`,
-  `worker.last_successful_tick_at` recent and heartbeat fresh.
+- `/health/ready` HTTP 200 with `worker.tick_fresh=true` (idle), or
+  `worker.active_task_within_bound=true` (bounded, verified in-flight task),
+  plus a fresh runtime heartbeat. A stuck worker must eventually return 503.
 - A new persisted `public.nodes` record for `nova-runtime-1` with
   recent `last_seen_at` and matching worker metadata.
 - Worker tick/queue evidence, authenticated read-only MCP,
