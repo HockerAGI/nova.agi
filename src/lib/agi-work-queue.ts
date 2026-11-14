@@ -248,11 +248,46 @@ export async function getAgiTask(projectId: string, taskId: string): Promise<Agi
   return data ? normalizeTask(data) : null;
 }
 
+/**
+ * Protects a newly started runtime from silently consuming legacy queued jobs.
+ * This is a read-only preflight: no rows are claimed, recovered or mutated.
+ * An operator must triage expired tasks under Hocker One governance first.
+ */
+export const MAX_UNREVIEWED_AGI_TASK_AGE_MS = 24 * 60 * 60 * 1000;
+
+export async function countUnreviewedStaleAgiTasks(
+  projectId: string,
+  nowMs = Date.now(),
+): Promise<number> {
+  if (!projectId.trim() || !Number.isFinite(nowMs)) {
+    throw new Error("AGI_WORKER_BACKLOG_PREFLIGHT_INVALID");
+  }
+  const cutoff = new Date(nowMs - MAX_UNREVIEWED_AGI_TASK_AGE_MS).toISOString();
+  const { count, error } = await db()
+    .from("agi_tasks")
+    .select("id", { head: true, count: "exact" })
+    .eq("project_id", projectId)
+    .in("status", ["queued", "pending"])
+    .lt("created_at", cutoff);
+
+  if (error) throw schemaError(error);
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error("AGI_WORKER_BACKLOG_PREFLIGHT_UNAVAILABLE");
+  }
+  return count;
+}
+
 export async function claimNextAgiTask(params: {
   project_id: string;
   worker_id: string;
   assigned_agi?: string | null;
 }): Promise<AgiTaskRow | null> {
+  // Always preflight before taking a task lock, including authenticated run-once.
+  // Never start stale queued work automatically after an outage or a deployment.
+  if (await countUnreviewedStaleAgiTasks(params.project_id) > 0) {
+    throw new Error("AGI_WORKER_STALE_BACKLOG_REQUIRES_REVIEW");
+  }
+
   const { data, error } = await db().rpc("claim_next_agi_task", {
     p_project_id: params.project_id,
     p_worker_id: params.worker_id,
