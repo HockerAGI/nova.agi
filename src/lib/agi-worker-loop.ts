@@ -1,4 +1,4 @@
-import { recoverStaleAgiTasks } from "./agi-work-queue.js";
+import { countUnreviewedStaleAgiTasks, recoverStaleAgiTasks } from "./agi-work-queue.js";
 import { runOneAgiTaskAndRespond } from "./agi-worker-cycle.js";
 
 type WorkerLoopLogger = {
@@ -74,6 +74,11 @@ export function startAgiWorkerLoop(logger: WorkerLoopLogger): () => void {
     tickCount += 1;
 
     try {
+      // No recovery writes or task claims while historical queued/pending
+      // work requires Owner triage. Repeat preflight on every tick to fail closed.
+      if (await countUnreviewedStaleAgiTasks(state.project_id) > 0) {
+        throw new Error("AGI_WORKER_STALE_BACKLOG_REQUIRES_REVIEW");
+      }
       if (tickCount === 1 || tickCount % 20 === 0) {
         const recovered = await recoverStaleAgiTasks(state.project_id);
         if (recovered > 0) logger.warn(`[NOVA AGI WORKER] recovered ${recovered} stale task locks`);
