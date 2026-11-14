@@ -32,6 +32,43 @@ NOVA_RUNTIME_HEARTBEAT_MS
 
 Never commit this file.
 
+## TLS configuration and safe deployment preflight
+Caddy requires **both** values in an external file `/etc/nova/caddy.env`:
+`NOVA_DOMAIN` and `NOVA_TLS_EMAIL`. Configure a real, DNS-verified hostname
+and a real certificate contact address. Do not place keys in this file.
+Use restrictive permissions for the secret runtime env file
+(`chmod 600 /etc/nova/nova.env`) and never print it in CI/logs.
+
+Before any deployment, confirm you can access an **already provisioned,
+authorized OCI Always Free ARM64 VM**; this repository does not provision one.
+Use the exact approved main SHA, not an arbitrary branch:
+```bash
+git fetch origin main
+git checkout --detach <approved-commit-sha>
+docker compose --env-file /etc/nova/caddy.env -f deploy/oci/docker-compose.yml config --quiet
+docker compose --env-file /etc/nova/caddy.env -f deploy/oci/docker-compose.yml build
+```
+The commands above **only validate/build locally**. They do not start,
+redeploy, or certify a remote runtime. Ensure OCI image resources remain within
+the actual account quota. Starting the worker could invoke configured
+LLM providers for queued tasks and incur usage; inspect task backlog and
+provider billing controls before setting `NOVA_AGI_WORKER_ENABLED=true`.
+
+Once explicit release gates permit activation, record:
+- Exact Git SHA and resulting container image digest (no `latest` only).
+- TLS DNS ownership and `/health` HTTP 200.
+- `/health/ready` HTTP 200 with `worker.tick_fresh=true` (idle), or
+  `worker.active_task_within_bound=true` (bounded, verified in-flight task),
+  plus a fresh runtime heartbeat. A stuck worker must eventually return 503.
+- A new persisted `public.nodes` record for `nova-runtime-1` with
+  recent `last_seen_at` and matching worker metadata.
+- Worker tick/queue evidence, authenticated read-only MCP,
+  Hocker One fallback authenticated E2E, Owner Gate deferral,
+  secret-free logs and a rollback demonstration.
+- Keep Hocker One as primary; do not switch its runtime endpoint
+  merely because Docker starts or a process is marked `online`.
+
+
 ## Activation gate
 Do not change Hocker One's NOVA endpoint until one exact image/revision passes:
 1. /health 200
