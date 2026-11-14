@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { hasFreshSuccessfulWorkerTick } from "../src/lib/worker-tick-freshness.ts";
+import { hasBoundedInFlightWorkerTick, hasFreshSuccessfulWorkerTick } from "../src/lib/worker-tick-freshness.ts";
 
 const read = (p) => readFile(new URL("../" + p, import.meta.url), "utf8");
 
@@ -17,12 +17,28 @@ test("dedicated NOVA worker readiness requires a recent successful tick", () => 
   assert.equal(hasFreshSuccessfulWorkerTick(ts(0),0,now),false);
 });
 
+test("in-flight fallback stays ready only with a bounded current-process successful tick", () => {
+  const now = Date.parse("2026-11-14T03:00:00.000Z");
+  const ts = (delta) => new Date(now - delta).toISOString();
+  // The preceding tick completed, and this task has valid 60s provider attempts.
+  assert.equal(hasBoundedInFlightWorkerTick(true, ts(120_000), ts(140_000), now), true);
+  assert.equal(hasBoundedInFlightWorkerTick(true, ts(390_000), ts(410_000), now), true);
+  // A task stalled beyond the upper time bound cannot preserve readiness.
+  assert.equal(hasBoundedInFlightWorkerTick(true, ts(421_000), ts(425_000), now), false);
+  assert.equal(hasBoundedInFlightWorkerTick(false, ts(120_000), ts(140_000), now), false);
+  assert.equal(hasBoundedInFlightWorkerTick(true, ts(120_000), null, now), false);
+  assert.equal(hasBoundedInFlightWorkerTick(true, ts(-500), ts(140_000), now), false);
+  assert.equal(hasBoundedInFlightWorkerTick(true, ts(120_000), ts(110_000), now), false);
+});
+
 test("NOVA /health/ready fails closed when worker heartbeat is stale",async()=>{
   const source=await read("src/lib/runtime-readiness.ts");
   assert.match(source,/hasFreshSuccessfulWorkerTick\(/);
   assert.match(source,/AGI_WORKER_TICK_STALE/);
   assert.match(source,/tick_fresh: workerTickFresh/);
-  assert.match(source,/worker\.enabled &&\s*workerTickFresh &&\s*!worker\.last_error/);
+  assert.match(source,/hasBoundedInFlightWorkerTick\(/);
+  assert.match(source,/active_task_within_bound: activeTaskWithinBound/);
+  assert.match(source,/worker\.enabled &&\s*\(workerTickFresh \|\| activeTaskWithinBound\) &&\s*!worker\.last_error/);
 });
 
 test("OCI Caddy TLS email is passed explicitly and Docker runtime stays private",async()=>{
