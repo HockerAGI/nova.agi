@@ -82,3 +82,41 @@ Do not change Hocker One's NOVA endpoint until one exact image/revision passes:
 9. rollback to previous image demonstrated
 
 Until then this VM is staging/compatibility only.
+
+
+## Stale task activation safety gate — 2026-11-14
+
+Live read-only Supabase inspection for project `hocker-one` found
+**13 queued tasks created on 2026-08-03 and 1 pending task from 2026-06-24**.
+These are historical records, **not authorization** to run them during the
+first dedicated runtime boot. No tasks have been canceled or modified.
+
+The worker checks, before **every automatic tick, recovery write and
+authenticated run-once task claim**, whether any project-scoped `queued`
+or `pending` task is older than **24 hours**. It queries counts only
+(`head: true, count: exact`), never reads task payloads for this gate.
+If any exist, the worker throws the fixed code
+`AGI_WORKER_STALE_BACKLOG_REQUIRES_REVIEW` and does **not** recover locks,
+claim tasks, call providers or produce artificial runtime readiness.
+Database errors or missing counts fail closed.
+
+Before allowing `NOVA_AGI_WORKER_ENABLED=true` on the actual server:
+1. Keep the worker disabled; take a **read-only** snapshot of pending task IDs,
+   status, created time, assigned AGI, write policy and approval requirements
+   without printing task payloads or secrets.
+2. Have the authorized Owner triage every historical task in Hocker One:
+   cancel/expire obsolete jobs with proper audit, or explicitly re-enqueue
+   still-relevant work as a **new** request with a new idempotency key and
+   current authorization. Never silently rewrite `created_at` or clear
+   the queue en masse to satisfy readiness.
+3. Verify zero stale `queued`/`pending` rows for this project and verify
+   no unapproved material action is queued. Then perform the exact-image
+   readiness, heartbeat, bounded read-only MCP, Owner Gate and rollback
+   certification sequence described above.
+4. After activation, stale work blocks processing again until triaged;
+   this preserves a safe restart contract even after outages.
+
+This gate is deliberately conservative. It cannot replace the current
+Owner AAL2 ceremony, prove a physical runtime, or create recurring paid
+inference. No automated task cancellation, API key, plan upgrade or
+production database migration is part of this change.
