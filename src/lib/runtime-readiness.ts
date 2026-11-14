@@ -1,7 +1,7 @@
 import { config, modelFor, providerReady } from "../config.js";
 import { getAgiWorkerLoopState } from "./agi-worker-loop.js";
 import { getNovaRuntimeHeartbeatState } from "./runtime-heartbeat.js";
-import { hasFreshSuccessfulWorkerTick } from "./worker-tick-freshness.js";
+import { hasBoundedInFlightWorkerTick, hasFreshSuccessfulWorkerTick } from "./worker-tick-freshness.js";
 import { sbAdmin } from "./supabase.js";
 
 const PROVIDERS = ["openai", "gemini", "anthropic", "ollama", "base44"] as const;
@@ -79,9 +79,14 @@ export async function getNovaRuntimeReadiness() {
     worker.last_successful_tick_at,
     worker.interval_ms,
   );
+  const activeTaskWithinBound = hasBoundedInFlightWorkerTick(
+    worker.running,
+    worker.last_tick_at,
+    worker.last_successful_tick_at,
+  );
   const workerReady =
     worker.enabled &&
-    workerTickFresh &&
+    (workerTickFresh || activeTaskWithinBound) &&
     !worker.last_error;
   const workerRequirementSatisfied = !config.readiness.requireWorker || workerReady;
   const heartbeatFresh = Boolean(
@@ -95,7 +100,7 @@ export async function getNovaRuntimeReadiness() {
   if (config.localOnlyMode && !localModelOnline) reasons.push("LOCAL_MODEL_UNAVAILABLE");
   if (!workerRequirementSatisfied) {
     reasons.push(!worker.enabled ? "AGI_WORKER_DISABLED"
-      : !workerTickFresh ? "AGI_WORKER_TICK_STALE" : "AGI_WORKER_NOT_READY");
+      : !(workerTickFresh || activeTaskWithinBound) ? "AGI_WORKER_TICK_STALE" : "AGI_WORKER_NOT_READY");
   }
   const heartbeatReady = heartbeat.running && heartbeatFresh && !heartbeat.last_error;
   if (!heartbeat.running || !heartbeatFresh) reasons.push("HEARTBEAT_NOT_FRESH");
@@ -128,6 +133,7 @@ export async function getNovaRuntimeReadiness() {
         last_tick_at: worker.last_tick_at,
         last_successful_tick_at: worker.last_successful_tick_at,
         tick_fresh: workerTickFresh,
+        active_task_within_bound: activeTaskWithinBound,
         has_error: Boolean(worker.last_error),
       },
       heartbeat: {
